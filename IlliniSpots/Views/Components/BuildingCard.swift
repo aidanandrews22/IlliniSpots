@@ -4,15 +4,23 @@ struct BuildingCard: View {
     let building: Building
     let imageURL: String?
     let isCompact: Bool
+    let cardWidth: CGFloat
     
-    // Fixed dimensions for the card
-    private let cardWidth: CGFloat = 200
-    private let cardHeight: CGFloat = 220
-    private let imageHeight: CGFloat = 150
+    // Fixed aspect ratios
+    private let cardAspectRatio: CGFloat = 220/200 // height/width ratio from original dimensions
+    private let imageAspectRatio: CGFloat = 150/200 // height/width ratio from original dimensions
+    
+    private var cardHeight: CGFloat {
+        cardWidth * cardAspectRatio
+    }
+    
+    private var imageHeight: CGFloat {
+        cardWidth * imageAspectRatio
+    }
     
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            // Image container with fixed dimensions
+            // Image container with dynamic dimensions
             if let imageURL = imageURL {
                 AsyncImage(url: URL(string: imageURL)) { image in
                     image
@@ -30,7 +38,7 @@ struct BuildingCard: View {
                     .frame(width: cardWidth, height: imageHeight)
             }
             
-            // Text container with fixed height
+            // Text container
             Text(building.name)
                 .font(.headline)
                 .foregroundColor(Color("Text"))
@@ -60,6 +68,7 @@ struct BuildingCard: View {
             sortedId: 1
         ),
         imageURL: nil,
-        isCompact: true
+        isCompact: true,
+        cardWidth: 200
     )
 } 
