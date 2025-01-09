@@ -12,10 +12,83 @@ struct ContentView: View {
     @EnvironmentObject private var authManager: AuthenticationManager
     
     var body: some View {
-        Group {
-            if authManager.isAuthenticated {
-                UserProfileView()
-            } else {
+        TabView {
+            HomeView()
+                .tabItem {
+                    Label("Home", systemImage: "house.fill")
+                }
+            
+            Group {
+                if authManager.isAuthenticated {
+                    UserProfileView()
+                } else {
+                    SignInPromptView()
+                }
+            }
+            .tabItem {
+                Label("Profile", systemImage: "person.fill")
+            }
+        }
+        .accentColor(Color("Primary"))
+    }
+}
+
+struct HomeView: View {
+    var body: some View {
+        NavigationView {
+            VStack {
+                Text("Welcome to IlliniSpots")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundColor(Color("Text"))
+                    .padding()
+                
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color("Background"))
+            .navigationTitle("Home")
+        }
+    }
+}
+
+struct SignInPromptView: View {
+    @State private var showingLogin = false
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                Image(systemName: "person.crop.circle.badge.exclamationmark")
+                    .font(.system(size: 60))
+                    .foregroundColor(Color("Primary"))
+                    .padding()
+                
+                Text("Sign in Required")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(Color("Text"))
+                
+                Text("Please sign in to access your profile")
+                    .font(.system(size: 16))
+                    .foregroundColor(Color("Text"))
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal)
+                
+                Button(action: {
+                    showingLogin = true
+                }) {
+                    Text("Sign In")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 200, height: 45)
+                        .background(Color("Primary"))
+                        .cornerRadius(10)
+                }
+                
+                Spacer()
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color("Background"))
+            .navigationTitle("Profile")
+            .sheet(isPresented: $showingLogin) {
                 LoginView()
             }
         }
@@ -23,77 +96,66 @@ struct ContentView: View {
 }
 
 struct LoginView: View {
-    var body: some View {
-        VStack(spacing: 20) {
-            Image("Logo")
-                .resizable()
-                .scaledToFit()
-                .frame(width: 120, height: 120)
-                .clipShape(RoundedRectangle(cornerRadius: 24))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 24)
-                        .stroke(Color("Primary"), lineWidth: 2)
-                )
-                .shadow(radius: 5)
-            
-            Text("IlliniSpots")
-                .font(.system(size: 55, weight: .heavy))
-                .foregroundColor(Color("Text"))
-                .padding(.bottom, 10)
-            
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Email")
-                    .font(.system(.title3, weight: .semibold))
-                    .foregroundColor(Color("Text"))
-                TextField("", text: .constant(""))
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(true)
-                
-                Text("Password")
-                    .font(.system(.title3, weight: .semibold))
-                    .foregroundColor(Color("Text"))
-                SecureField("", text: .constant(""))
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(true)
-            }
-            .padding(.horizontal)
-            
-            Button("Log In") {
-                // Disabled button
-            }
-            .font(.system(size: 23, weight: .semibold))
-            .foregroundColor(Color("Primary"))
-            
-            SignInWithAppleButton(
-                onRequest: { request in
-                    request.requestedScopes = [.fullName, .email]
-                },
-                onCompletion: { result in
-                    authManager.handleSignInWithAppleCompletion(result)
-                }
-            )
-            .frame(height: 44)
-            .padding(.horizontal)
-            
-            Spacer()
-            
-            Button("Forgot Password?") {
-                // Disabled button
-            }
-            .foregroundColor(Color("Primary"))
-            
-            Button("Create Account") {
-                // Disabled button
-            }
-            .foregroundColor(Color("Primary"))
-            .padding(.bottom)
-        }
-        .padding()
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color("Background"))
-    }
-    
+    @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var authManager: AuthenticationManager
+    
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 20) {
+                Capsule()
+                    .fill(Color.gray.opacity(0.3))
+                    .frame(width: 36, height: 5)
+                    .padding(.top, 8)
+                
+                Spacer()
+                    .frame(height: 20)
+                
+                Image("Logo")
+                    .resizable()
+                    .scaledToFit()
+                    .frame(width: 120, height: 120)
+                    .clipShape(RoundedRectangle(cornerRadius: 24))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 24)
+                            .stroke(Color("Primary"), lineWidth: 2)
+                    )
+                    .shadow(radius: 5)
+                
+                Text("IlliniSpots")
+                    .font(.system(size: 55, weight: .heavy))
+                    .foregroundColor(Color("Text"))
+                    .padding(.bottom, 10)
+                
+                Spacer()
+                
+                VStack(spacing: 16) {
+                    SignInWithAppleButton(
+                        onRequest: { request in
+                            request.requestedScopes = [.fullName, .email]
+                        },
+                        onCompletion: { result in
+                            authManager.handleSignInWithAppleCompletion(result)
+                            dismiss()
+                        }
+                    )
+                    .frame(height: 44)
+                    
+//                    Button("Continue without signing in") {
+//                        dismiss()
+//                    }
+//                    .font(.system(size: 18, weight: .semibold))
+//                    .foregroundColor(Color("Primary"))
+                }
+                .padding(.horizontal)
+                .padding(.bottom, 30)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color("Background"))
+            .navigationBarHidden(true)
+        }
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+    }
 }
 
 struct UserProfileView: View {
