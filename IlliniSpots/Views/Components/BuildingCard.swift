@@ -5,8 +5,14 @@ struct BuildingCard: View {
     let imageURL: String?
     let isCompact: Bool
     
+    // Fixed dimensions for the card
+    private let cardWidth: CGFloat = 200
+    private let cardHeight: CGFloat = 220
+    private let imageHeight: CGFloat = 150
+    
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
+            // Image container with fixed dimensions
             if let imageURL = imageURL {
                 AsyncImage(url: URL(string: imageURL)) { image in
                     image
@@ -16,23 +22,27 @@ struct BuildingCard: View {
                     Rectangle()
                         .foregroundColor(Color.gray.opacity(0.2))
                 }
-                .frame(width: isCompact ? 200 : nil, height: 150)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .frame(width: cardWidth, height: imageHeight)
+                .clipped()
             } else {
                 Rectangle()
                     .foregroundColor(Color.gray.opacity(0.2))
-                    .frame(width: isCompact ? 200 : nil, height: 150)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .frame(width: cardWidth, height: imageHeight)
             }
             
+            // Text container with fixed height
             Text(building.name)
                 .font(.headline)
                 .foregroundColor(Color("Text"))
-                .lineLimit(2)
-                .padding(.horizontal, 4)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(maxWidth: cardWidth - 16)
+                .padding(.horizontal, 8)
         }
-        .frame(width: isCompact ? 200 : nil)
+        .frame(width: cardWidth, height: cardHeight)
         .background(Color("Background"))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .shadow(radius: 2, y: 1)
     }
 }
 
