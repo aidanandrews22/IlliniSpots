@@ -19,7 +19,7 @@ struct BuildingCard: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading) {
             // Image container with dynamic dimensions
             if let imageURL = imageURL {
                 AsyncImage(url: URL(string: imageURL)) { image in
@@ -47,7 +47,7 @@ struct BuildingCard: View {
                 .frame(maxWidth: cardWidth - 16)
                 .padding(.horizontal, 8)
         }
-        .frame(width: cardWidth, height: cardHeight)
+        .frame(width: cardWidth, height: cardHeight, alignment: .top)
         .background(Color("Background"))
         .clipShape(RoundedRectangle(cornerRadius: 12))
         .shadow(radius: 2, y: 1)

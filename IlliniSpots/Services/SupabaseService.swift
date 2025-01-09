@@ -106,13 +106,21 @@ class SupabaseService {
     }
     
     // MARK: - Building Methods
-    func getAllBuildings() async throws -> [Building] {
+    func getAllBuildings(limit: Int = 25, offset: Int = 0) async throws -> [Building] {
         let buildings = try await client.from("buildings")
             .select()
             .order("sorted_id")
+            .range(from: offset, to: offset + limit - 1)
             .execute()
             .value as [Building]
         return buildings
+    }
+    
+    func getTotalBuildingCount() async throws -> Int {
+        let response = try await client.from("buildings")
+            .select("*", count: .exact)
+            .execute()
+        return response.count ?? 0
     }
     
     func getBuildingImages(buildingId: Int64) async throws -> [BuildingImage] {
