@@ -104,6 +104,39 @@ class SupabaseService {
             return nil
         }
     }
+    
+    // MARK: - Building Methods
+    func getAllBuildings() async throws -> [Building] {
+        let buildings = try await client.from("buildings")
+            .select()
+            .order("sorted_id")
+            .execute()
+            .value as [Building]
+        return buildings
+    }
+    
+    func getBuildingImages(buildingId: Int64) async throws -> [BuildingImage] {
+        let images = try await client.from("building_images")
+            .select()
+            .eq("building_id", value: String(buildingId))
+            .order("display_order")
+            .execute()
+            .value as [BuildingImage]
+        return images
+    }
+    
+    func getUserBuildingFavorites(userId: UUID) async throws -> [BuildingFavorite] {
+        do {
+            let favorites = try await client.from("building_favorites")
+                .select()
+                .eq("user_id", value: userId.uuidString)
+                .execute()
+                .value as [BuildingFavorite]
+            return favorites
+        } catch {
+            return []
+        }
+    }
 }
 
 // MARK: - Models
@@ -130,5 +163,51 @@ struct Profile: Codable {
         case firstName = "first_name"
         case lastName = "last_name"
         case email
+    }
+}
+
+struct Building: Codable, Identifiable {
+    let id: Int64
+    let name: String
+    let description: String?
+    let isAvailable: Bool?
+    let address: String?
+    let hours: String?
+    let favorites: Int16
+    let commentCount: Int16
+    let sortedId: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, description, address, hours
+        case isAvailable = "is_available"
+        case favorites, commentCount = "comment_count"
+        case sortedId = "sorted_id"
+    }
+}
+
+struct BuildingImage: Codable, Identifiable {
+    let id: Int64
+    let buildingId: Int64
+    let url: String
+    let displayOrder: Int?
+    let isPrimary: Bool?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, url
+        case buildingId = "building_id"
+        case displayOrder = "display_order"
+        case isPrimary = "is_primary"
+    }
+}
+
+struct BuildingFavorite: Codable, Identifiable {
+    let id: Int64
+    let userId: UUID
+    let buildingId: Int64
+    
+    enum CodingKeys: String, CodingKey {
+        case id
+        case userId = "user_id"
+        case buildingId = "building_id"
     }
 }
