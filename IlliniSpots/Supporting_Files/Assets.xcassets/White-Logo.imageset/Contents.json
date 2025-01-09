@@ -1,6 +1,7 @@
 {
-  "colors" : [
+  "images" : [
     {
+      "filename" : "white-logo.png",
       "idiom" : "universal"
     }
   ],

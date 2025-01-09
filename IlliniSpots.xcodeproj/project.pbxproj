@@ -6,6 +6,11 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		DDEA64442D2DDDC200F4FB08 /* AuthenticationServices.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = DDEA64432D2DDDC200F4FB08 /* AuthenticationServices.framework */; };
+		DDEA64472D2DDFB900F4FB08 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = DDEA64462D2DDFB900F4FB08 /* Supabase */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXContainerItemProxy section */
 		DDEA63F62D2DDBED00F4FB08 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
@@ -27,13 +32,14 @@
 		DDEA63E12D2DDBEB00F4FB08 /* IlliniSpots.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = IlliniSpots.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		DDEA63F52D2DDBED00F4FB08 /* IlliniSpotsTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = IlliniSpotsTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		DDEA63FF2D2DDBED00F4FB08 /* IlliniSpotsUITests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = IlliniSpotsUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		DDEA64432D2DDDC200F4FB08 /* AuthenticationServices.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = AuthenticationServices.framework; path = System/Library/Frameworks/AuthenticationServices.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		DDEA64072D2DDBED00F4FB08 /* Exceptions for "IlliniSpots" folder in "IlliniSpots" target */ = {
+		DDEA64482D2DE13200F4FB08 /* Exceptions for "IlliniSpots" folder in "IlliniSpots" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Info.plist,
+				Supporting_Files/Info.plist,
 			);
 			target = DDEA63E02D2DDBEB00F4FB08 /* IlliniSpots */;
 		};
@@ -43,7 +49,7 @@
 		DDEA63E32D2DDBEB00F4FB08 /* IlliniSpots */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
-				DDEA64072D2DDBED00F4FB08 /* Exceptions for "IlliniSpots" folder in "IlliniSpots" target */,
+				DDEA64482D2DE13200F4FB08 /* Exceptions for "IlliniSpots" folder in "IlliniSpots" target */,
 			);
 			path = IlliniSpots;
 			sourceTree = "<group>";
@@ -65,6 +71,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				DDEA64472D2DDFB900F4FB08 /* Supabase in Frameworks */,
+				DDEA64442D2DDDC200F4FB08 /* AuthenticationServices.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -91,6 +99,7 @@
 				DDEA63E32D2DDBEB00F4FB08 /* IlliniSpots */,
 				DDEA63F82D2DDBED00F4FB08 /* IlliniSpotsTests */,
 				DDEA64022D2DDBED00F4FB08 /* IlliniSpotsUITests */,
+				DDEA64422D2DDDC200F4FB08 /* Frameworks */,
 				DDEA63E22D2DDBEB00F4FB08 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -103,6 +112,14 @@
 				DDEA63FF2D2DDBED00F4FB08 /* IlliniSpotsUITests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		DDEA64422D2DDDC200F4FB08 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				DDEA64432D2DDDC200F4FB08 /* AuthenticationServices.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -125,6 +142,7 @@
 			);
 			name = IlliniSpots;
 			packageProductDependencies = (
+				DDEA64462D2DDFB900F4FB08 /* Supabase */,
 			);
 			productName = IlliniSpots;
 			productReference = DDEA63E12D2DDBEB00F4FB08 /* IlliniSpots.app */;
@@ -208,6 +226,9 @@
 			);
 			mainGroup = DDEA63D82D2DDBEB00F4FB08;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				DDEA64452D2DDFAD00F4FB08 /* XCRemoteSwiftPackageReference "supabase-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = DDEA63E22D2DDBEB00F4FB08 /* Products */;
 			projectDirPath = "";
@@ -287,14 +308,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = IlliniSpots/IlliniSpots.entitlements;
+				CODE_SIGN_ENTITLEMENTS = IlliniSpots/Supporting_Files/IlliniSpots.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_ASSET_PATHS = "\"IlliniSpots/Preview Content\"";
+				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = ZNGWS63593;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = IlliniSpots/Info.plist;
+				INFOPLIST_FILE = IlliniSpots/Supporting_Files/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -318,14 +339,14 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
-				CODE_SIGN_ENTITLEMENTS = IlliniSpots/IlliniSpots.entitlements;
+				CODE_SIGN_ENTITLEMENTS = IlliniSpots/Supporting_Files/IlliniSpots.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_ASSET_PATHS = "\"IlliniSpots/Preview Content\"";
+				DEVELOPMENT_ASSET_PATHS = "";
 				DEVELOPMENT_TEAM = ZNGWS63593;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = IlliniSpots/Info.plist;
+				INFOPLIST_FILE = IlliniSpots/Supporting_Files/Info.plist;
 				INFOPLIST_KEY_UIApplicationSceneManifest_Generation = YES;
 				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
 				INFOPLIST_KEY_UILaunchScreen_Generation = YES;
@@ -575,6 +596,25 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		DDEA64452D2DDFAD00F4FB08 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.5.1;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		DDEA64462D2DDFB900F4FB08 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = DDEA64452D2DDFAD00F4FB08 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = DDEA63D92D2DDBEB00F4FB08 /* Project object */;
 }
