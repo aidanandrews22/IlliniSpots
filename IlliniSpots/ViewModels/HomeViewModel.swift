@@ -2,9 +2,8 @@ import Foundation
 
 @MainActor
 class HomeViewModel: ObservableObject {
-    @Published var buildings: [Building] = []
-    @Published var favoriteBuildings: [Building] = []
-    @Published var buildingImages: [Int64: String] = [:]
+    @Published var buildingDetails: [BuildingDetails] = []
+    @Published var favoriteBuildingDetails: [BuildingDetails] = []
     @Published var isLoading = false
     @Published var error: Error?
     @Published var totalBuildingCount: Int = 0
@@ -28,54 +27,33 @@ class HomeViewModel: ObservableObject {
             }
             
             if isInitialLoad {
-                buildings = []
+                buildingDetails = []
                 currentOffset = 0
-                buildingImages = [:]
+                favoriteBuildingDetails = []
             }
             
-            // Load buildings with pagination
-            let newBuildings = try await supabase.getAllBuildings(limit: pageSize, offset: currentOffset)
-            buildings.append(contentsOf: newBuildings)
+            // Load buildings with details
+            let newBuildingDetails = try await supabase.getAllBuildingsWithDetails(
+                limit: pageSize,
+                offset: currentOffset,
+                userId: UUID(uuidString: "00000000-0000-0000-0000-000000000000")
+            )
+            
+            buildingDetails.append(contentsOf: newBuildingDetails)
+            
+            // Update favorites
+            favoriteBuildingDetails = buildingDetails.filter { $0.isFavorited }
             
             // Update pagination state
-            hasMoreContent = buildings.count < totalBuildingCount
-            currentOffset += newBuildings.count
+            hasMoreContent = buildingDetails.count < totalBuildingCount
+            currentOffset += newBuildingDetails.count
             
-            // Load favorite buildings if user is signed in
-            if isInitialLoad, let userId = UUID(uuidString: "00000000-0000-0000-0000-000000000000") {
-                let favorites = try await supabase.getUserBuildingFavorites(userId: userId)
-                favoriteBuildings = buildings.filter { building in
-                    favorites.contains { $0.buildingId == building.id }
-                }
-            }
-            
-            // Load primary images for new buildings
-            await loadImagesForBuildings(newBuildings)
         } catch {
             self.error = error
             print("Error loading buildings: \(error)")
         }
         
         isLoading = false
-    }
-    
-    private func loadImagesForBuildings(_ buildings: [Building]) async {
-        await withTaskGroup(of: Void.self) { group in
-            for building in buildings {
-                group.addTask {
-                    do {
-                        let images = try await self.supabase.getBuildingImages(buildingId: building.id)
-                        if let primaryImage = images.first(where: { $0.isPrimary == true }) ?? images.first {
-                            await MainActor.run {
-                                self.buildingImages[building.id] = primaryImage.url
-                            }
-                        }
-                    } catch {
-                        print("Failed to load image for building \(building.id): \(error)")
-                    }
-                }
-            }
-        }
     }
     
     func loadMoreContent() async {
@@ -85,10 +63,7 @@ class HomeViewModel: ObservableObject {
         isLoadingMore = false
     }
     
-    func ensureBuildingDataLoaded(_ building: Building) async {
-        // Ensure image is loaded for visible building
-        if buildingImages[building.id] == nil {
-            await loadImagesForBuildings([building])
-        }
+    func ensureBuildingDataLoaded(_ buildingDetails: BuildingDetails) async {
+        // No need to load additional data since BuildingDetails already contains everything
     }
 } 
