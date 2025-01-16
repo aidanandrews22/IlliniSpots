@@ -1,52 +1,94 @@
 import SwiftUI
 
 struct HomeView: View {
-    @StateObject private var viewModel = HomeViewModel()
-    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
+    @EnvironmentObject private var authManager: AuthenticationManager
+    let categories = ["All", "Available", "Favorites", "Libraries"]
     
-    private func calculateCardWidth(for geometry: GeometryProxy) -> CGFloat {
-        let spacing: CGFloat = 16
-        let horizontalPadding: CGFloat = 16 * 2
-        let numberOfColumns: CGFloat = 2
+    @State private var selectedCategory = "All"
+    @State private var buildings: [BuildingDetails] = []
+    @State private var isLoading = false
+    @State private var currentPage = 0
+    @State private var hasMoreData = true
+    
+    private let pageSize = 25
+    
+    var filteredBuildings: [BuildingDetails] {
+        switch selectedCategory {
+        case "Available":
+            return buildings.filter { $0.isOpen && $0.availableRooms > 0 }
+        case "Libraries":
+            return buildings.filter { $0.building.name.contains("Library") }
+        case "Favorites":
+            return buildings.filter { $0.isFavorited }
+        default:
+            return buildings
+        }
+    }
+    
+    func loadMoreContent() async {
+        guard !isLoading && hasMoreData else { return }
         
-        let availableWidth = geometry.size.width - horizontalPadding - (spacing * (numberOfColumns - 1))
-        return availableWidth / numberOfColumns
+        isLoading = true
+        do {
+            let newBuildings = try await SupabaseService.shared.getAllBuildingsWithDetails(
+                limit: pageSize,
+                offset: currentPage * pageSize,
+                userId: authManager.userId,
+                onBuildingReady: { building in
+                    // Update UI on main thread as each building becomes ready
+                    DispatchQueue.main.async {
+                        buildings.append(building)
+                    }
+                }
+            )
+            
+            // Update pagination state
+            await MainActor.run {
+                if newBuildings.isEmpty {
+                    hasMoreData = false
+                } else {
+                    currentPage += 1
+                }
+                isLoading = false
+            }
+        } catch {
+            print("Error loading buildings: \(error)")
+            await MainActor.run {
+                isLoading = false
+            }
+        }
     }
     
     var body: some View {
         NavigationView {
-            GeometryReader { geometry in
-                let cardWidth = calculateCardWidth(for: geometry)
+            VStack(spacing: 0) {
+                SearchBarView()
+                
+                CategoryFilterView(
+                    categories: categories,
+                    selectedCategory: $selectedCategory
+                )
                 
                 ScrollView {
-                    ScrollViewReader { scrollProxy in
-                        VStack(alignment: .leading, spacing: 24) {
-                            FavoritesSection(
-                                favorites: viewModel.favoriteBuildingDetails,
-                                cardWidth: cardWidth
-                            )
-                            
-                            BuildingsGridSection(
-                                buildings: viewModel.buildingDetails,
-                                cardWidth: cardWidth,
-                                isLoading: viewModel.isLoading,
-                                hasMoreContent: viewModel.hasMoreContent,
-                                totalCount: viewModel.totalBuildingCount,
-                                onLoadMore: {
-                                    Task {
-                                        await viewModel.loadMoreContent()
-                                    }
+                    BuildingListView(
+                        buildings: filteredBuildings,
+                        userId: authManager.userId,
+                        isLoading: isLoading,
+                        onLoadMore: {
+                            if hasMoreData {
+                                Task {
+                                    await loadMoreContent()
                                 }
-                            )
+                            }
                         }
-                        .padding(.vertical)
-                    }
+                    )
                 }
-                .coordinateSpace(name: "scroll")
-                .background(Color("Background"))
-                .navigationTitle("Home")
-                .task {
-                    await viewModel.loadBuildings()
+            }
+            .navigationBarHidden(true)
+            .background(Color(.systemBackground))
+            .task {
+                if buildings.isEmpty {
+                    await loadMoreContent()
                 }
             }
         }
@@ -55,4 +97,5 @@ struct HomeView: View {
 
 #Preview {
     HomeView()
+        .environmentObject(AuthenticationManager())
 } 
