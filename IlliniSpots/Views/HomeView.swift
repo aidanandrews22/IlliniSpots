@@ -1,19 +1,20 @@
 import SwiftUI
+import SwiftData
 
 struct HomeView: View {
     @EnvironmentObject private var authManager: AuthenticationManager
-    let categories = ["All", "Available", "Favorites", "Libraries"]
+    @Environment(\.modelContext) private var modelContext
+    let categories = ["All", "Open", "Available", "Favorites", "Libraries"]
     
     @State private var selectedCategory = "All"
     @State private var buildings: [BuildingDetails] = []
     @State private var isLoading = false
-    @State private var currentPage = 0
-    @State private var hasMoreData = true
-    
-    private let pageSize = 25
+    @State private var totalBuildingCount = 0
     
     var filteredBuildings: [BuildingDetails] {
         switch selectedCategory {
+        case "Open":
+            return buildings.filter { $0.isOpen }
         case "Available":
             return buildings.filter { $0.isOpen && $0.availableRooms > 0 }
         case "Libraries":
@@ -25,34 +26,59 @@ struct HomeView: View {
         }
     }
     
-    func loadMoreContent() async {
-        guard !isLoading && hasMoreData else { return }
-        
-        isLoading = true
+    func loadContent() async {
+        // First try to load from cache
         do {
-            let newBuildings = try await SupabaseService.shared.getAllBuildingsWithDetails(
-                limit: pageSize,
-                offset: currentPage * pageSize,
-                userId: authManager.userId,
-                onBuildingReady: { building in
-                    // Update UI on main thread as each building becomes ready
-                    DispatchQueue.main.async {
-                        buildings.append(building)
-                    }
+            let cachedBuildings = try await BuildingCacheService.shared.loadCachedBuildings()
+            if !cachedBuildings.isEmpty {
+                await MainActor.run {
+                    buildings = cachedBuildings
+                    totalBuildingCount = cachedBuildings.count
                 }
+            }
+        } catch {
+            print("Error loading from cache: \(error)")
+        }
+        
+        // Then fetch fresh data from Supabase
+        do {
+            isLoading = true
+            
+            // Update terms cache in parallel with buildings
+            Task {
+                do {
+                    try await BuildingCacheService.shared.updateTermsCache()
+                } catch {
+                    print("Error updating terms cache: \(error)")
+                }
+            }
+            
+            let count = try await SupabaseService.shared.getTotalBuildingCount()
+            let freshBuildings = try await SupabaseService.shared.getAllBuildingsWithDetails(
+                limit: count, // Get all buildings at once
+                offset: 0,
+                userId: authManager.userId
             )
             
-            // Update pagination state
-            await MainActor.run {
-                if newBuildings.isEmpty {
-                    hasMoreData = false
-                } else {
-                    currentPage += 1
+            // Update cache with new data
+            Task {
+                do {
+                    try await BuildingCacheService.shared.updateCache(with: freshBuildings.map(\.building))
+                } catch {
+                    print("Error updating cache: \(error)")
                 }
+            }
+            
+            // Only update UI if data is different
+            await MainActor.run {
+                if buildings != freshBuildings {
+                    buildings = freshBuildings
+                }
+                totalBuildingCount = count
                 isLoading = false
             }
         } catch {
-            print("Error loading buildings: \(error)")
+            print("Error loading from Supabase: \(error)")
             await MainActor.run {
                 isLoading = false
             }
@@ -74,22 +100,27 @@ struct HomeView: View {
                         buildings: filteredBuildings,
                         userId: authManager.userId,
                         isLoading: isLoading,
-                        onLoadMore: {
-                            if hasMoreData {
-                                Task {
-                                    await loadMoreContent()
-                                }
-                            }
-                        }
+                        onLoadMore: { }, // No more pagination needed
+                        totalBuildings: totalBuildingCount,
+                        category: selectedCategory,
+                        hasMoreData: false // We always have all data
                     )
                 }
             }
             .navigationBarHidden(true)
             .background(Color(.systemBackground))
             .task {
+                // Configure cache service with model context
+                BuildingCacheService.shared.configure(modelContext: modelContext)
+                
+                // Load data on first launch
                 if buildings.isEmpty {
-                    await loadMoreContent()
+                    await loadContent()
                 }
+            }
+            .refreshable {
+                // Allow manual refresh
+                await loadContent()
             }
         }
     }

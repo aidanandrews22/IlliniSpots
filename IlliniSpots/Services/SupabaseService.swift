@@ -383,6 +383,12 @@ extension SupabaseService {
             return (false, 0)
         }
         
+        // Check for 24-hour operation
+        if todayHours.contains("Open 24 hours") {
+            print("🕐 Building is open 24 hours")
+            return (true, 1)
+        }
+        
         // Parse hours like "8:00 AM – 5:00 PM"
         let components = todayHours.components(separatedBy: ": ")
         guard components.count > 1 else {
@@ -393,6 +399,7 @@ extension SupabaseService {
         let timeComponents = components[1].components(separatedBy: " – ")
         guard timeComponents.count == 2 else {
             print("❌ Invalid time range format")
+            print("Time components: \(timeComponents)")
             return (false, 0)
         }
         
@@ -433,35 +440,57 @@ extension SupabaseService {
         return adjustedHours * 60 + minutes
     }
     
-    func getCurrentTerm() async throws -> Term? {
-        let now = Date()
+    func getCurrentTerms() async throws -> [Term] {
+        let now = Date().inChicagoTimeZone
+        let calendar = Date.chicagoCalendar
         
         do {
-            let term = try await client.from("terms")
+            let terms = try await client.from("terms")
                 .select()
-                .lte("start_date", value: now.iso8601String)
-                .gte("end_date", value: now.iso8601String)
-                .single()
+                .order("start_date")
                 .execute()
-                .value as Term?
-            return term
+                .value as [Term]
+            
+            // Find all terms that contain the current date
+            return terms.filter { term in
+                let startDate = term.startDate.inChicagoTimeZone
+                let endDate = term.endDate.inChicagoTimeZone
+                
+                // Adjust end date to end of day
+                let adjustedEndDate = calendar.date(bySettingHour: 23, minute: 59, second: 59, of: endDate) ?? endDate
+                
+                return now >= startDate && now <= adjustedEndDate
+            }
         } catch {
-            return nil
+            print("Error fetching terms: \(error)")
+            return []
         }
+    }
+    
+    func getAllTerms() async throws -> [Term] {
+        let terms = try await client.from("terms")
+            .select()
+            .order("start_date")
+            .execute()
+            .value as [Term]
+        return terms
     }
     
     // MARK: - Room Availability Methods
     func getRoomAvailability(buildingId: Int64) async throws -> Int {
         print("🔄 Starting room availability check for building ID: \(buildingId)")
         
-        guard let currentTerm = try await getCurrentTerm() else {
-            print("⚠️ No current term found - returning 0 available rooms")
+        let currentTerms = try await BuildingCacheService.shared.getCurrentTerms()
+        guard !currentTerms.isEmpty else {
+            print("⚠️ No current terms found - returning 0 available rooms")
             return 0
         }
-        print("📅 Current term: \(currentTerm.term) \(currentTerm.year)")
         
-        let calendar = Calendar.current
-        let now = Date()
+        let termIds = currentTerms.map { String($0.id) }
+        print("📅 Current terms: \(currentTerms.map { "\($0.term) \($0.year) (\($0.partOfTerm))" }.joined(separator: ", "))")
+        
+        let calendar = Date.chicagoCalendar
+        let now = Date().inChicagoTimeZone
         let currentWeekday = calendar.component(.weekday, from: now)
         let weekdayString = weekdayToString(currentWeekday)
         print("📆 Current day: \(weekdayString)")
@@ -469,6 +498,7 @@ extension SupabaseService {
         // Get current time in HH:mm:ss format
         let formatter = DateFormatter()
         formatter.dateFormat = "HH:mm:ss"
+        formatter.timeZone = Date.chicagoTimeZone
         let currentTimeString = formatter.string(from: now)
         print("⏰ Current time: \(currentTimeString)")
         
@@ -484,12 +514,12 @@ extension SupabaseService {
         var availableRooms = rooms.count
         var occupiedRooms: [String] = []
         
-        // Check each room's events
+        // Check each room's events across all current terms
         for room in rooms {
             let events = try await client.from("events")
                 .select()
                 .eq("room_id", value: String(room.id))
-                .eq("term_id", value: String(currentTerm.id))
+                .in("term_id", values: termIds)
                 .lte("start_time", value: currentTimeString)
                 .gte("end_time", value: currentTimeString)
                 .like("days_of_week", pattern: "%\(weekdayString)%")
@@ -498,7 +528,8 @@ extension SupabaseService {
             
             if !events.isEmpty {
                 availableRooms -= 1
-                occupiedRooms.append("\(room.roomNumber) (\(events[0].name))")
+                let termInfo = currentTerms.first { $0.id == events[0].termId }?.partOfTerm ?? "unknown"
+                occupiedRooms.append("\(room.roomNumber) (\(events[0].name) - \(termInfo))")
             }
         }
         
@@ -548,7 +579,7 @@ extension SupabaseService {
             // 1. Get essential data first (availability and primary image)
             print("  ⏳ Loading essential data...")
             async let roomsTask = getRoomCounts(buildingId: building.id)
-            let (isOpen, _) = getBuildingAvailability(buildingId: building.id, hours: building.hours ?? "")
+            let (isOpen, availableRoomsFromHours) = getBuildingAvailability(buildingId: building.id, hours: building.hours ?? "")
             
             // Get primary image first
             let allImages = try await getBuildingImages(buildingId: building.id)
@@ -565,15 +596,15 @@ extension SupabaseService {
             }
             
             // 3. Get room counts (needed for initial display)
-            let (totalRooms, availableRooms) = try await roomsTask
-            print("  🚪 Room counts loaded: \(availableRooms)/\(totalRooms) available")
+            let (totalRooms, _) = try await roomsTask
+            print("  🚪 Room counts loaded: \(availableRoomsFromHours)/\(totalRooms) available")
             
             // 4. Create initial building details with essential data
             let details = BuildingDetails(
                 building: building,
                 isOpen: isOpen,
                 totalRooms: totalRooms,
-                availableRooms: availableRooms,
+                availableRooms: isOpen ? availableRoomsFromHours : 0,
                 ratings: [],
                 images: initialImages,
                 isFavorited: isFavorited
@@ -785,5 +816,21 @@ extension Date {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.string(from: self)
+    }
+    
+    static var chicagoTimeZone: TimeZone {
+        TimeZone(identifier: "America/Chicago") ?? .current
+    }
+    
+    static var chicagoCalendar: Calendar {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = chicagoTimeZone
+        return calendar
+    }
+    
+    var inChicagoTimeZone: Date {
+        let calendar = Date.chicagoCalendar
+        let components = calendar.dateComponents(in: Date.chicagoTimeZone, from: self)
+        return calendar.date(from: components) ?? self
     }
 }

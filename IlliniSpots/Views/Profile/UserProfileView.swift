@@ -8,6 +8,7 @@ struct UserProfileView: View {
     @State private var email: String = ""
     @State private var showingAlert = false
     @State private var alertMessage = ""
+    @State private var isClearing = false
     
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
@@ -38,6 +39,25 @@ struct UserProfileView: View {
                 }
             }
             
+            Button(action: {
+                Task {
+                    await clearCacheAndReload()
+                }
+            }) {
+                HStack {
+                    if isClearing {
+                        ProgressView()
+                            .tint(Color("Primary"))
+                            .padding(.trailing, 8)
+                    }
+                    Text(isClearing ? "Clearing Cache..." : "Clear Cache and Reload")
+                }
+                .font(.system(size: 23, weight: .semibold))
+                .foregroundColor(Color("Primary"))
+                .frame(maxWidth: .infinity)
+            }
+            .disabled(isClearing)
+            
             Button("Sign Out") {
                 authManager.signOut()
             }
@@ -58,6 +78,33 @@ struct UserProfileView: View {
         .onAppear {
             Task {
                 await loadUserProfile()
+            }
+        }
+    }
+    
+    private func clearCacheAndReload() async {
+        isClearing = true
+        defer { isClearing = false }
+        
+        do {
+            // Clear the cache
+            try BuildingCacheService.shared.clearCacheOnUserRequest()
+            
+            // Fetch fresh data from Supabase
+            let buildings = try await SupabaseService.shared.getAllBuildings()
+            try await BuildingCacheService.shared.updateCache(with: buildings)
+            
+            // Update terms cache
+            try await BuildingCacheService.shared.updateTermsCache()
+            
+            DispatchQueue.main.async {
+                showingAlert = true
+                alertMessage = "Cache cleared and data reloaded successfully!"
+            }
+        } catch {
+            DispatchQueue.main.async {
+                showingAlert = true
+                alertMessage = "Failed to clear cache: \(error.localizedDescription)"
             }
         }
     }

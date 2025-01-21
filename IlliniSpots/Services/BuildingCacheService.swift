@@ -102,11 +102,35 @@ final class CachedBuildingRating {
     }
 }
 
+@Model
+final class CachedTerm {
+    var id: Int64
+    var year: Int
+    var term: String
+    var yearTerm: String
+    var partOfTerm: String
+    var startDate: Date
+    var endDate: Date
+    var lastUpdated: Date?
+    
+    init(from term: Term) {
+        self.id = term.id
+        self.year = term.year
+        self.term = term.term
+        self.yearTerm = term.yearTerm
+        self.partOfTerm = term.partOfTerm
+        self.startDate = term.startDate
+        self.endDate = term.endDate
+        self.lastUpdated = Date()
+    }
+}
+
 actor BuildingCacheService {
     static let shared = BuildingCacheService()
     private let logger = Logger(subsystem: "com.illinispots.app", category: "BuildingCacheService")
     private let supabase = SupabaseService.shared
     private var modelContext: ModelContext?
+    private let cacheExpirationInterval: TimeInterval = 60 * 60 * 24 // 24 hours
     
     private init() {}
     
@@ -178,13 +202,14 @@ actor BuildingCacheService {
                 )
             }
             
-            let (isOpen, _) = supabase.getBuildingAvailability(buildingId: building.id, hours: building.hours)
+            let (isOpen, availableRooms) = supabase.getBuildingAvailability(buildingId: building.id, hours: building.hours)
+            let totalRooms = cached.rooms?.count ?? 0
             
             return BuildingDetails(
                 building: building,
                 isOpen: isOpen,
-                totalRooms: cached.rooms?.count ?? 0,
-                availableRooms: cached.rooms?.count ?? 0, // This will be updated in real-time
+                totalRooms: totalRooms,
+                availableRooms: isOpen ? availableRooms : 0,
                 ratings: ratings,
                 images: images,
                 isFavorited: false // This will be updated based on user state
@@ -200,46 +225,198 @@ actor BuildingCacheService {
         
         logger.info("Starting cache update with \(buildings.count) buildings")
         
-        // First, delete all existing cached buildings
-        try clearCache()
+        // Process buildings in smaller batches to prevent memory issues
+        let batchSize = 10
+        for i in stride(from: 0, to: buildings.count, by: batchSize) {
+            let end = min(i + batchSize, buildings.count)
+            let batch = buildings[i..<end]
+            
+            for building in batch {
+                logger.info("Processing building: \(building.name)")
+                
+                // Check if building already exists in cache
+                let descriptor = FetchDescriptor<CachedBuilding>(
+                    predicate: #Predicate<CachedBuilding> { $0.id == building.id }
+                )
+                let existingBuildings = try context.fetch(descriptor)
+                let existingBuilding = existingBuildings.first
+                
+                // Check if we need to update based on cache freshness
+                let shouldUpdate = existingBuilding.map { cached -> Bool in
+                    guard let lastUpdated = cached.lastUpdated else { return true }
+                    return Date().timeIntervalSince(lastUpdated) > cacheExpirationInterval
+                } ?? true
+                
+                if shouldUpdate {
+                    async let roomsTask = supabase.getRooms(buildingId: building.id)
+                    async let imagesTask = supabase.getBuildingImages(buildingId: building.id)
+                    async let ratingsTask = supabase.getBuildingRatings(buildingId: building.id)
+                    
+                    let (rooms, images, ratings) = try await (roomsTask, imagesTask, ratingsTask)
+                    
+                    if let existing = existingBuilding {
+                        // Update existing building
+                        existing.name = building.name
+                        existing.buildingDescription = building.description
+                        existing.isAvailable = building.isAvailable
+                        existing.address = building.address
+                        existing.hours = building.hours
+                        existing.favorites = building.favorites
+                        existing.commentCount = building.commentCount
+                        existing.sortedId = building.sortedId
+                        existing.lastUpdated = Date()
+                        
+                        // Update relationships
+                        existing.rooms = rooms.map { CachedRoom(from: $0, building: existing) }
+                        existing.images = images.map { CachedBuildingImage(from: $0, building: existing) }
+                        existing.ratings = ratings.map { CachedBuildingRating(from: $0, building: existing) }
+                        
+                        logger.info("Updated cached building: \(building.name)")
+                    } else {
+                        // Create new cached building
+                        let cachedBuilding = CachedBuilding(
+                            from: building,
+                            rooms: rooms,
+                            images: images,
+                            ratings: ratings
+                        )
+                        context.insert(cachedBuilding)
+                        logger.info("Created new cached building: \(building.name)")
+                    }
+                    
+                    // Save after each building to prevent memory issues
+                    try context.save()
+                    
+                    logger.info("Processed building \(building.name) with \(rooms.count) rooms, \(images.count) images, and \(ratings.count) ratings")
+                } else {
+                    logger.info("Skipped updating \(building.name) - cache is still fresh")
+                }
+            }
+        }
         
-        for building in buildings {
-            logger.info("Processing building: \(building.name)")
-            
-            async let roomsTask = supabase.getRooms(buildingId: building.id)
-            async let imagesTask = supabase.getBuildingImages(buildingId: building.id)
-            async let ratingsTask = supabase.getBuildingRatings(buildingId: building.id)
-            
-            let (rooms, images, ratings) = try await (roomsTask, imagesTask, ratingsTask)
-            
-            // Create new cached building
-            let cachedBuilding = CachedBuilding(
-                from: building,
-                rooms: rooms,
-                images: images,
-                ratings: ratings
-            )
-            context.insert(cachedBuilding)
-            
-            logger.info("Cached building \(building.name) with \(rooms.count) rooms, \(images.count) images, and \(ratings.count) ratings")
+        // Clean up any buildings that no longer exist in the source data
+        let allBuildingIds = Set(buildings.map { $0.id })
+        let allCachedDescriptor = FetchDescriptor<CachedBuilding>()
+        let allCachedBuildings = try context.fetch(allCachedDescriptor)
+        
+        for cachedBuilding in allCachedBuildings {
+            if let id = cachedBuilding.id, !allBuildingIds.contains(id) {
+                context.delete(cachedBuilding)
+                logger.info("Deleted cached building that no longer exists in source data")
+            }
         }
         
         try context.save()
         logger.info("Cache update completed successfully")
     }
     
-    func clearCache() throws {
+    func getCurrentTerms() async throws -> [Term] {
         guard let context = modelContext else {
             logger.error("ModelContext not configured")
             throw CacheError.notConfigured
         }
         
-        logger.info("Clearing building cache...")
+        // First try to get from cache
+        let now = Date().inChicagoTimeZone
+        let descriptor = FetchDescriptor<CachedTerm>(
+            predicate: #Predicate<CachedTerm> { term in
+                term.startDate <= now && term.endDate >= now
+            }
+        )
+        
+        let cachedTerms = try context.fetch(descriptor)
+        if !cachedTerms.isEmpty {
+            return cachedTerms.map { cachedTerm in
+                Term(
+                    id: cachedTerm.id,
+                    year: cachedTerm.year,
+                    term: cachedTerm.term,
+                    yearTerm: cachedTerm.yearTerm,
+                    partOfTerm: cachedTerm.partOfTerm,
+                    startDate: cachedTerm.startDate,
+                    endDate: cachedTerm.endDate
+                )
+            }
+        }
+        
+        // If not in cache, fetch from Supabase and cache them
+        let terms = try await supabase.getCurrentTerms()
+        if !terms.isEmpty {
+            for term in terms {
+                let cachedTerm = CachedTerm(from: term)
+                context.insert(cachedTerm)
+            }
+            try context.save()
+        }
+        
+        return terms
+    }
+    
+    func updateTermsCache() async throws {
+        guard let context = modelContext else {
+            logger.error("ModelContext not configured")
+            throw CacheError.notConfigured
+        }
+        
+        // Fetch all terms from Supabase
+        let terms = try await supabase.getAllTerms()
+        
+        // Clear existing terms
+        try await clearTermsCache()
+        
+        // Cache new terms
+        for term in terms {
+            let cachedTerm = CachedTerm(from: term)
+            context.insert(cachedTerm)
+        }
+        
+        try context.save()
+        logger.info("Terms cache updated with \(terms.count) terms")
+    }
+    
+    private func clearTermsCache() async throws {
+        guard let context = modelContext else {
+            logger.error("ModelContext not configured")
+            throw CacheError.notConfigured
+        }
+        
+        logger.info("Clearing terms cache...")
+        
+        let descriptor = FetchDescriptor<CachedTerm>()
+        let cachedTerms = try context.fetch(descriptor)
+        
+        // Delete each term individually
+        for term in cachedTerms {
+            context.delete(term)
+            
+            // Save after each deletion to prevent memory issues
+            try context.save()
+        }
+        
+        logger.info("Terms cache cleared successfully")
+    }
+    
+    /// Explicitly clear the cache when requested by the user
+    func clearCacheOnUserRequest() throws {
+        guard let context = modelContext else {
+            logger.error("ModelContext not configured")
+            throw CacheError.notConfigured
+        }
+        
+        logger.info("User requested cache clear - clearing building cache...")
+        
         let descriptor = FetchDescriptor<CachedBuilding>()
         let cachedBuildings = try context.fetch(descriptor)
-        cachedBuildings.forEach { context.delete($0) }
-        try context.save()
-        logger.info("Building cache cleared successfully")
+        
+        // Delete each building individually
+        for building in cachedBuildings {
+            context.delete(building)
+            
+            // Save after each deletion to prevent memory issues
+            try context.save()
+        }
+        
+        logger.info("Building cache cleared successfully on user request")
     }
     
     enum CacheError: Error {
