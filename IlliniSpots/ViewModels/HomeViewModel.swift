@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 
 @MainActor
 class HomeViewModel: ObservableObject {
@@ -10,20 +11,39 @@ class HomeViewModel: ObservableObject {
     @Published var hasMoreContent = true
     
     private let supabase = SupabaseService.shared
+    private let cache = BuildingCacheService.shared
+    private let logger = Logger(subsystem: "com.illinispots.app", category: "HomeViewModel")
     private let pageSize = 25
     private var currentOffset = 0
     private var isLoadingMore = false
     private var hasFetchedInitialCount = false
+    private var lastRefreshTime: Date?
+    private let refreshInterval: TimeInterval = 3600 // 1 hour
     
-    func loadBuildings(isInitialLoad: Bool = true) async {
+    func loadBuildings(isInitialLoad: Bool = true, forceRefresh: Bool = false) async {
         guard !isLoading else { return }
         isLoading = true
+        logger.info("Loading buildings (initial: \(isInitialLoad), force refresh: \(forceRefresh))")
         
         do {
-            // Always ensure we have the total count
-            if !hasFetchedInitialCount {
+            // Check if we need to refresh from server
+            let shouldRefreshFromServer = forceRefresh || 
+                lastRefreshTime == nil || 
+                Date().timeIntervalSince(lastRefreshTime!) > refreshInterval
+            
+            if shouldRefreshFromServer {
+                logger.info("Refreshing data from server")
+                // Get total count from server
                 totalBuildingCount = try await supabase.getTotalBuildingCount()
                 hasFetchedInitialCount = true
+                
+                // Fetch all buildings from server
+                let buildings = try await supabase.getAllBuildings()
+                
+                // Update cache with new data
+                try await cache.updateCache(with: buildings)
+                lastRefreshTime = Date()
+                logger.info("Server refresh completed")
             }
             
             if isInitialLoad {
@@ -32,25 +52,23 @@ class HomeViewModel: ObservableObject {
                 favoriteBuildingDetails = []
             }
             
-            // Load buildings with details
-            let newBuildingDetails = try await supabase.getAllBuildingsWithDetails(
-                limit: pageSize,
-                offset: currentOffset,
-                userId: UUID(uuidString: "00000000-0000-0000-0000-000000000000")
-            )
+            // Load from cache
+            logger.info("Loading buildings from cache")
+            let cachedBuildings = try await cache.loadCachedBuildings()
             
-            buildingDetails.append(contentsOf: newBuildingDetails)
-            
-            // Update favorites
+            // Update UI with cached data
+            buildingDetails = cachedBuildings
             favoriteBuildingDetails = buildingDetails.filter { $0.isFavorited }
             
             // Update pagination state
             hasMoreContent = buildingDetails.count < totalBuildingCount
-            currentOffset += newBuildingDetails.count
+            currentOffset += buildingDetails.count
+            
+            logger.info("Successfully loaded \(self.buildingDetails.count) buildings")
             
         } catch {
             self.error = error
-            print("Error loading buildings: \(error)")
+            logger.error("Error loading buildings: \(error.localizedDescription)")
         }
         
         isLoading = false
@@ -63,7 +81,13 @@ class HomeViewModel: ObservableObject {
         isLoadingMore = false
     }
     
+    func refreshBuildings() async {
+        logger.info("Manual refresh triggered")
+        await loadBuildings(isInitialLoad: true, forceRefresh: true)
+    }
+    
     func ensureBuildingDataLoaded(_ buildingDetails: BuildingDetails) async {
         // No need to load additional data since BuildingDetails already contains everything
+        // and is kept up to date through the cache
     }
 } 

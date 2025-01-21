@@ -145,6 +145,17 @@ class SupabaseService {
             return []
         }
     }
+    
+    func getRooms(buildingId: Int64) async throws -> [Room] {
+//        logger.info("Fetching rooms for building ID: \(buildingId)")
+        let rooms = try await client.from("rooms")
+            .select()
+            .eq("building_id", value: String(buildingId))
+            .execute()
+            .value as [Room]
+//        logger.info("Found \(rooms.count) rooms for building ID: \(buildingId)")
+        return rooms
+    }
 }
 
 // MARK: - Models
@@ -174,7 +185,8 @@ struct Profile: Codable {
     }
 }
 
-struct Building: Codable, Identifiable, Equatable {
+// Update Building to be a class
+final class Building: Codable, Identifiable, Equatable {
     let id: Int64
     let name: String
     let description: String?
@@ -185,11 +197,27 @@ struct Building: Codable, Identifiable, Equatable {
     let commentCount: Int16
     let sortedId: Int?
     
+    init(id: Int64, name: String, description: String?, isAvailable: Bool?, address: String?, hours: String?, favorites: Int16, commentCount: Int16, sortedId: Int?) {
+        self.id = id
+        self.name = name
+        self.description = description
+        self.isAvailable = isAvailable
+        self.address = address
+        self.hours = hours
+        self.favorites = favorites
+        self.commentCount = commentCount
+        self.sortedId = sortedId
+    }
+    
     enum CodingKeys: String, CodingKey {
         case id, name, description, address, hours
         case isAvailable = "is_available"
         case favorites, commentCount = "comment_count"
         case sortedId = "sorted_id"
+    }
+    
+    static func == (lhs: Building, rhs: Building) -> Bool {
+        lhs.id == rhs.id
     }
 }
 
