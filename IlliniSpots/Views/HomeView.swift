@@ -111,7 +111,7 @@ struct HomeView: View {
             .background(Color(.systemBackground))
             .task {
                 // Configure cache service with model context
-                BuildingCacheService.shared.configure(modelContext: modelContext)
+                BuildingCacheService.shared.configure(modelContext)
                 
                 // Load data on first launch
                 if buildings.isEmpty {

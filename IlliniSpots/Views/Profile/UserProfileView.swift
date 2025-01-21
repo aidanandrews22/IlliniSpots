@@ -88,7 +88,7 @@ struct UserProfileView: View {
         
         do {
             // Clear the cache
-            try BuildingCacheService.shared.clearCacheOnUserRequest()
+            try await BuildingCacheService.shared.clearCacheOnUserRequest()
             
             // Fetch fresh data from Supabase
             let buildings = try await SupabaseService.shared.getAllBuildings()

@@ -24,10 +24,17 @@ struct IlliniSpotsApp: App {
                 CachedBuilding.self,
                 CachedRoom.self,
                 CachedBuildingImage.self,
-                CachedBuildingRating.self
+                CachedBuildingRating.self,
+                CachedTerm.self
             ])
-            let modelConfiguration = ModelConfiguration(schema: schema)
-            modelContainer = try ModelContainer(for: schema, configurations: [modelConfiguration])
+            let modelConfiguration = ModelConfiguration(
+                schema: schema,
+                cloudKitDatabase: .none // Disable CloudKit integration
+            )
+            modelContainer = try ModelContainer(
+                for: schema,
+                configurations: [modelConfiguration]
+            )
             
             // Configure BuildingCacheService with the model context
             configureBuildingCacheService(modelContainer: modelContainer)
@@ -51,9 +58,7 @@ struct IlliniSpotsApp: App {
     }
     
     private func configureBuildingCacheService(modelContainer: ModelContainer) {
-        Task {
-            BuildingCacheService.shared.configure(modelContext: modelContainer.mainContext)
-        }
+        BuildingCacheService.shared.configure(modelContainer.mainContext)
     }
 }
 

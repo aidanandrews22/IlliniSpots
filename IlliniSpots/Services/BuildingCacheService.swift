@@ -125,7 +125,12 @@ final class CachedTerm {
     }
 }
 
-actor BuildingCacheService {
+@globalActor actor BuildingCacheActor {
+    static let shared = BuildingCacheActor()
+}
+
+@BuildingCacheActor
+final class BuildingCacheService {
     static let shared = BuildingCacheService()
     private let logger = Logger(subsystem: "com.illinispots.app", category: "BuildingCacheService")
     private let supabase = SupabaseService.shared
@@ -134,9 +139,11 @@ actor BuildingCacheService {
     
     private init() {}
     
-    func configure(modelContext: ModelContext) {
-        self.modelContext = modelContext
-        logger.info("BuildingCacheService configured with ModelContext")
+    nonisolated func configure(_ context: ModelContext) {
+        Task { @BuildingCacheActor in
+            self.modelContext = context
+            logger.info("BuildingCacheService configured with ModelContext")
+        }
     }
     
     func loadCachedBuildings() async throws -> [BuildingDetails] {
@@ -147,73 +154,93 @@ actor BuildingCacheService {
         
         logger.info("Loading buildings from cache...")
         let descriptor = FetchDescriptor<CachedBuilding>(sortBy: [SortDescriptor(\.sortedId)])
-        let cachedBuildings = try context.fetch(descriptor)
+        let cachedBuildings = try await MainActor.run {
+            try context.fetch(descriptor)
+        }
         
         logger.info("Found \(cachedBuildings.count) buildings in cache")
         
-        return cachedBuildings.compactMap { cached in
-            // Ensure required fields are present
-            guard let id = cached.id,
-                  let name = cached.name,
-                  let favorites = cached.favorites,
-                  let commentCount = cached.commentCount else {
-                logger.warning("Skipping cached building due to missing required fields")
-                return nil
+        return try await withThrowingTaskGroup(of: BuildingDetails?.self) { group in
+            for cached in cachedBuildings {
+                group.addTask {
+                    // Ensure required fields are present
+                    guard let id = cached.id,
+                          let name = cached.name,
+                          let favorites = cached.favorites,
+                          let commentCount = cached.commentCount else {
+                        self.logger.warning("Skipping cached building due to missing required fields")
+                        return nil
+                    }
+                    
+                    let building = Building(
+                        id: id,
+                        name: name,
+                        description: cached.buildingDescription,
+                        isAvailable: cached.isAvailable,
+                        address: cached.address,
+                        hours: cached.hours,
+                        favorites: favorites,
+                        commentCount: commentCount,
+                        sortedId: cached.sortedId
+                    )
+                    
+                    let images = try await MainActor.run {
+                        (cached.images ?? []).compactMap { image -> BuildingImage? in
+                            guard let id = image.id,
+                                  let buildingId = image.buildingId,
+                                  let url = image.url else { return nil }
+                            
+                            return BuildingImage(
+                                id: id,
+                                buildingId: buildingId,
+                                url: url,
+                                displayOrder: image.displayOrder,
+                                isPrimary: image.isPrimary
+                            )
+                        }
+                    }
+                    
+                    let ratings = try await MainActor.run {
+                        (cached.ratings ?? []).compactMap { rating -> BuildingRating? in
+                            guard let id = rating.id,
+                                  let userId = rating.userId,
+                                  let buildingId = rating.buildingId,
+                                  let ratingValue = rating.rating else { return nil }
+                            
+                            return BuildingRating(
+                                id: id,
+                                userId: userId,
+                                buildingId: buildingId,
+                                rating: ratingValue,
+                                comment: rating.comment
+                            )
+                        }
+                    }
+                    
+                    let (isOpen, availableRooms) = await self.supabase.getBuildingAvailability(buildingId: building.id, hours: building.hours)
+                    let totalRooms = try await MainActor.run {
+                        cached.rooms?.count ?? 0
+                    }
+                    
+                    return BuildingDetails(
+                        building: building,
+                        isOpen: isOpen,
+                        totalRooms: totalRooms,
+                        availableRooms: isOpen ? availableRooms : 0,
+                        ratings: ratings,
+                        images: images,
+                        isFavorited: false // This will be updated based on user state
+                    )
+                }
             }
             
-            let building = Building(
-                id: id,
-                name: name,
-                description: cached.buildingDescription,
-                isAvailable: cached.isAvailable,
-                address: cached.address,
-                hours: cached.hours,
-                favorites: favorites,
-                commentCount: commentCount,
-                sortedId: cached.sortedId
-            )
-            
-            let images = (cached.images ?? []).compactMap { image -> BuildingImage? in
-                guard let id = image.id,
-                      let buildingId = image.buildingId,
-                      let url = image.url else { return nil }
-                
-                return BuildingImage(
-                    id: id,
-                    buildingId: buildingId,
-                    url: url,
-                    displayOrder: image.displayOrder,
-                    isPrimary: image.isPrimary
-                )
+            var buildings: [BuildingDetails] = []
+            for try await building in group {
+                if let building = building {
+                    buildings.append(building)
+                }
             }
-            
-            let ratings = (cached.ratings ?? []).compactMap { rating -> BuildingRating? in
-                guard let id = rating.id,
-                      let userId = rating.userId,
-                      let buildingId = rating.buildingId,
-                      let ratingValue = rating.rating else { return nil }
-                
-                return BuildingRating(
-                    id: id,
-                    userId: userId,
-                    buildingId: buildingId,
-                    rating: ratingValue,
-                    comment: rating.comment
-                )
-            }
-            
-            let (isOpen, availableRooms) = supabase.getBuildingAvailability(buildingId: building.id, hours: building.hours)
-            let totalRooms = cached.rooms?.count ?? 0
-            
-            return BuildingDetails(
-                building: building,
-                isOpen: isOpen,
-                totalRooms: totalRooms,
-                availableRooms: isOpen ? availableRooms : 0,
-                ratings: ratings,
-                images: images,
-                isFavorited: false // This will be updated based on user state
-            )
+            return buildings.sorted { $0.building.sortedId ?? 0 < $1.building.sortedId ?? 0 }
         }
     }
     
@@ -235,8 +262,11 @@ actor BuildingCacheService {
                 logger.info("Processing building: \(building.name)")
                 
                 // Check if building already exists in cache
+                let buildingId = building.id
                 let descriptor = FetchDescriptor<CachedBuilding>(
-                    predicate: #Predicate<CachedBuilding> { $0.id == building.id }
+                    predicate: #Predicate<CachedBuilding> { cached in
+                        cached.id == buildingId
+                    }
                 )
                 let existingBuildings = try context.fetch(descriptor)
                 let existingBuilding = existingBuildings.first
