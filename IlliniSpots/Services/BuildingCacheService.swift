@@ -198,6 +198,17 @@ final class BuildingCacheService {
                                 isPrimary: image.isPrimary
                             )
                         }
+                        .sorted { first, second in
+                            // Primary images come first
+                            if first.isPrimary == true && second.isPrimary != true {
+                                return true
+                            }
+                            if second.isPrimary == true && first.isPrimary != true {
+                                return false
+                            }
+                            // Then sort by display order
+                            return (first.displayOrder ?? 0) < (second.displayOrder ?? 0)
+                        }
                     }
                     
                     let ratings = try await MainActor.run {

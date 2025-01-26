@@ -54,27 +54,32 @@ struct HomeView: View {
             }
             
             let count = try await SupabaseService.shared.getTotalBuildingCount()
-            let freshBuildings = try await SupabaseService.shared.getAllBuildingsWithDetails(
-                limit: count, // Get all buildings at once
+            await MainActor.run {
+                totalBuildingCount = count
+            }
+            
+            // Use the onBuildingReady callback to update UI immediately as buildings load
+            try await SupabaseService.shared.getAllBuildingsWithDetails(
+                limit: count,
                 offset: 0,
-                userId: authManager.userId
+                userId: authManager.userId,
+                onBuildingReady: { buildingDetails in
+                    Task { @MainActor in
+                        buildings.append(buildingDetails)
+                    }
+                }
             )
             
             // Update cache with new data
             Task {
                 do {
-                    try await BuildingCacheService.shared.updateCache(with: freshBuildings.map(\.building))
+                    try await BuildingCacheService.shared.updateCache(with: buildings.map(\.building))
                 } catch {
                     print("Error updating cache: \(error)")
                 }
             }
             
-            // Only update UI if data is different
             await MainActor.run {
-                if buildings != freshBuildings {
-                    buildings = freshBuildings
-                }
-                totalBuildingCount = count
                 isLoading = false
             }
         } catch {

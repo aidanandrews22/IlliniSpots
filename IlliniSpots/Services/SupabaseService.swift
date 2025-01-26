@@ -130,7 +130,19 @@ class SupabaseService {
             .order("display_order")
             .execute()
             .value as [BuildingImage]
-        return images
+        
+        // Sort images: primary first, then by display order
+        return images.sorted { first, second in
+            // Primary images come first
+            if first.isPrimary == true && second.isPrimary != true {
+                return true
+            }
+            if second.isPrimary == true && first.isPrimary != true {
+                return false
+            }
+            // Then sort by display order
+            return (first.displayOrder ?? 0) < (second.displayOrder ?? 0)
+        }
     }
     
     func getUserBuildingFavorites(userId: UUID) async throws -> [BuildingFavorite] {
@@ -354,68 +366,101 @@ extension SupabaseService {
     // MARK: - Building Availability Methods
     func getBuildingAvailability(buildingId: Int64, hours: String?) -> (isOpen: Bool, availableRooms: Int) {
         print("🕒 Checking building availability...")
-        
+
+        // Use the Chicago time zone, ensuring correct local time.
+        let calendar = Calendar.current
+        let localNow = Date().inChicagoTimeZone
+        let weekday = calendar.component(.weekday, from: localNow)
+        let currentTime = calendar.component(.hour, from: localNow) * 60 + calendar.component(.minute, from: localNow)
+
         guard let hours = hours else {
             print("⚠️ No hours data available - marking as closed")
             return (false, 0)
         }
-        
-        let calendar = Calendar.current
-        let now = Date()
-        let weekday = calendar.component(.weekday, from: now)
-        let currentTime = calendar.component(.hour, from: now) * 60 + calendar.component(.minute, from: now)
-        
-        print("📅 Current weekday: \(weekday)")
-        print("⏰ Current time (in minutes since midnight): \(currentTime)")
-        
-        // Parse building hours
+
         let hoursArray = hours.components(separatedBy: "; ")
-        guard weekday <= hoursArray.count else {
+        // Map Sunday (=1) to the last index in an array that starts with Monday
+        // Monday=2 -> index 0, Tuesday=3 -> index 1, ..., Sunday=1 -> index 6
+        let dayIndex = (weekday + 5) % 7
+        guard dayIndex < hoursArray.count else {
             print("❌ Invalid weekday for hours data")
             return (false, 0)
         }
-        
-        let todayHours = hoursArray[weekday - 1] // weekday is 1-based
-        print("📋 Today's hours: \(todayHours)")
-        
+
+        let originalTodayHours = hoursArray[dayIndex]
+        print("📅 Current weekday: \(weekday)")
+        print("⏰ Current time (in minutes since midnight): \(currentTime)")
+        print("📋 Today's hours: \(originalTodayHours)")
+
+        // Normalize fancy dash/whitespace
+        let todayHours = originalTodayHours
+            .replacingOccurrences(of: "–", with: "-")
+            .replacingOccurrences(of: " ", with: " ")
+            .replacingOccurrences(of: " ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
         if todayHours.contains("Closed") {
             print("🚫 Building is closed today")
             return (false, 0)
         }
-        
+
         // Check for 24-hour operation
         if todayHours.contains("Open 24 hours") {
             print("🕐 Building is open 24 hours")
             return (true, 1)
         }
         
-        // Parse hours like "8:00 AM – 5:00 PM"
+        // Example format after cleaning might look like:
+        //   "Monday: 6:00 AM - 11:00 PM"
+        // We split off the "Monday:" portion, then split by " - "
         let components = todayHours.components(separatedBy: ": ")
         guard components.count > 1 else {
             print("❌ Invalid hours format")
             return (false, 0)
         }
         
-        let timeComponents = components[1].components(separatedBy: " – ")
-        guard timeComponents.count == 2 else {
+        // The time range should be something like "6:00 AM - 11:00 PM"
+        let hourString = components[1]
+        let timeRange = hourString.components(separatedBy: " - ")
+        guard timeRange.count == 2 else {
             print("❌ Invalid time range format")
-            print("Time components: \(timeComponents)")
+            print("Time components: \(timeRange)")
             return (false, 0)
         }
         
-        guard let openTime = timeStringToMinutes(timeComponents[0]),
-              let closeTime = timeStringToMinutes(timeComponents[1]) else {
+        // New fallback logic if the open portion lacks AM/PM but the close portion has it
+        var openPart = timeRange[0].trimmingCharacters(in: .whitespaces)
+        var closePart = timeRange[1].trimmingCharacters(in: .whitespaces)
+        
+        let openHasSuffix = openPart.hasSuffix("AM") || openPart.hasSuffix("PM")
+        let closeHasSuffix = closePart.hasSuffix("AM") || closePart.hasSuffix("PM")
+        
+        if !openHasSuffix && closeHasSuffix {
+            if closePart.hasSuffix("AM") {
+                openPart += " AM"
+            } else if closePart.hasSuffix("PM") {
+                openPart += " PM"
+            }
+        }
+        
+        guard let openTime = timeStringToMinutes(openPart),
+              var closeTime = timeStringToMinutes(closePart) else {
             print("❌ Could not parse open/close times")
             return (false, 0)
         }
-        
+
+        // Handle closing after midnight (e.g., "10:00 AM - 12:00 AM")
+        if closeTime < openTime {
+            closeTime += 1440 // add 24 hours
+        }
+
         print("🕐 Open time (in minutes): \(openTime)")
         print("🕐 Close time (in minutes): \(closeTime)")
         print("🕐 Current time (in minutes): \(currentTime)")
-        
+
         let isOpen = currentTime >= openTime && currentTime <= closeTime
         print(isOpen ? "✅ Building is currently OPEN" : "🚫 Building is currently CLOSED")
-        
+
         return (isOpen, isOpen ? 1 : 0)
     }
     
@@ -425,19 +470,18 @@ extension SupabaseService {
         
         let timeComponents = components[0].components(separatedBy: ":")
         guard timeComponents.count == 2,
-              let hours = Int(timeComponents[0]),
+              var hours = Int(timeComponents[0]),
               let minutes = Int(timeComponents[1]) else {
             return nil
         }
         
-        var adjustedHours = hours
         if components[1] == "PM" && hours != 12 {
-            adjustedHours += 12
+            hours += 12
         } else if components[1] == "AM" && hours == 12 {
-            adjustedHours = 0
+            hours = 0
         }
         
-        return adjustedHours * 60 + minutes
+        return hours * 60 + minutes
     }
     
     func getCurrentTerms() async throws -> [Term] {
