@@ -27,7 +27,12 @@ struct HomeView: View {
     }
     
     func loadContent() async {
-        // Show cached data first, then run parallel tasks for fresh data and term updates.
+        await MainActor.run {
+            isLoading = true
+            buildings = [] // Clear existing buildings
+        }
+        
+        // Show cached data first
         do {
             let cachedBuildings = try await BuildingCacheService.shared.loadCachedBuildings()
             if !cachedBuildings.isEmpty {
@@ -40,7 +45,6 @@ struct HomeView: View {
             print("Error loading from cache: \(error)")
         }
         
-        isLoading = true
         do {
             try await withThrowingTaskGroup(of: Void.self) { group in
                 // Update terms in parallel
@@ -59,17 +63,23 @@ struct HomeView: View {
                         totalBuildingCount = count
                     }
                     
-                    // Retrieve all buildings with concurrency. Update UI incrementally.
-                    let _ = try await SupabaseService.shared.getAllBuildingsWithDetails(
+                    // Create a temporary array to collect buildings
+                    var tempBuildings: [BuildingDetails] = []
+                    
+                    // Retrieve all buildings with concurrency
+                    let freshBuildings = try await SupabaseService.shared.getAllBuildingsWithDetails(
                         limit: count,
                         offset: 0,
                         userId: authManager.userId,
                         onBuildingReady: { details in
-                            Task { @MainActor in
-                                buildings.append(details)
-                            }
+                            tempBuildings.append(details)
                         }
                     )
+                    
+                    // Update UI with complete set of buildings
+                    await MainActor.run {
+                        buildings = freshBuildings
+                    }
                 }
                 
                 // Wait for both tasks
@@ -104,15 +114,21 @@ struct HomeView: View {
                 )
                 
                 ScrollView {
-                    BuildingListView(
-                        buildings: filteredBuildings,
-                        userId: authManager.userId,
-                        isLoading: isLoading,
-                        onLoadMore: { }, // No more pagination needed
-                        totalBuildings: totalBuildingCount,
-                        category: selectedCategory,
-                        hasMoreData: false // We always have all data
-                    )
+                    if isLoading && buildings.isEmpty {
+                        ProgressView("Loading buildings...")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .padding(.top, 40)
+                    } else {
+                        BuildingListView(
+                            buildings: filteredBuildings,
+                            userId: authManager.userId,
+                            isLoading: isLoading,
+                            onLoadMore: { }, // No more pagination needed
+                            totalBuildings: totalBuildingCount,
+                            category: selectedCategory,
+                            hasMoreData: false // We always have all data
+                        )
+                    }
                 }
             }
             .navigationBarHidden(true)

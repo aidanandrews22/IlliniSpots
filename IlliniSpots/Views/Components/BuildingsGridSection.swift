@@ -24,8 +24,11 @@ struct BuildingsGridSection: View {
                 spacing: 16
             ) {
                 ForEach(buildings, id: \.building.id) { details in
-                    BuildingCard(buildingDetails: details, userId: nil)
-                        .id(details.building.id)
+                    NavigationLink(destination: BuildingDetailView(buildingDetails: details, userId: nil)) {
+                        BuildingCard(buildingDetails: details, userId: nil)
+                            .id(details.building.id)
+                    }
+                    .buttonStyle(PlainButtonStyle())
                 }
             }
             .padding(.horizontal)

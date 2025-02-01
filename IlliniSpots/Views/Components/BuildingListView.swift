@@ -42,15 +42,18 @@ struct BuildingListView: View {
             }
             
             ForEach(buildings, id: \.building.id) { building in
-                BuildingCard(buildingDetails: building, userId: userId)
-                    .padding(.horizontal)
-                    .onAppear {
-                        if building == buildings.last {
-                            onLoadMore()
-                        }
+                NavigationLink(destination: BuildingDetailView(buildingDetails: building, userId: userId)) {
+                    BuildingCard(buildingDetails: building, userId: userId)
+                        .padding(.horizontal)
+                }
+                .buttonStyle(PlainButtonStyle())
+                .onAppear {
+                    if building == buildings.last {
+                        onLoadMore()
                     }
-                    .transition(.opacity)
-                    .animation(.easeInOut, value: building.images)
+                }
+                .transition(.opacity)
+                .animation(.easeInOut, value: building.images)
             }
             
             if isLoading {
@@ -100,4 +103,4 @@ struct BuildingListView: View {
             return "No buildings found."
         }
     }
-} 
+}
