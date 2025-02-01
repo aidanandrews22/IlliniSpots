@@ -168,6 +168,196 @@ class SupabaseService {
 //        logger.info("Found \(rooms.count) rooms for building ID: \(buildingId)")
         return rooms
     }
+
+    // In-memory dictionary to cache BuildingDetails for quick lookups.
+    private var buildingDetailsCache = [Int64: BuildingDetails]()
+    
+    func getAllBuildingsWithDetails(
+        limit: Int = 25,
+        offset: Int = 0,
+        userId: UUID? = nil,
+        onBuildingReady: ((BuildingDetails) -> Void)? = nil
+    ) async throws -> [BuildingDetails] {
+        print("\n📚 Starting batch load with concurrency: Offset \(offset), Limit \(limit)")
+        
+        let buildings = try await getAllBuildings(limit: limit, offset: offset)
+        print("📋 Found \(buildings.count) buildings to load")
+
+        var results = [BuildingDetails]()
+
+        try await withThrowingTaskGroup(of: BuildingDetails.self) { group in
+            for building in buildings {
+                // If we have a cached BuildingDetails, skip additional fetch
+                if let cachedDetails = buildingDetailsCache[building.id] {
+                    results.append(cachedDetails)
+                    onBuildingReady?(cachedDetails)
+                    continue
+                }
+
+                group.addTask {
+                    // Check open/closed status
+                    let (isOpen, _) = self.getBuildingAvailability(
+                        buildingId: building.id,
+                        hours: building.hours ?? ""
+                    )
+                    
+                    // Fetch room info in parallel
+                    async let roomsTask = self.getRoomCounts(buildingId: building.id)
+                    async let ratingsTask = self.getBuildingRatings(buildingId: building.id)
+                    async let imagesTask = self.getBuildingImages(buildingId: building.id)
+
+                    // Check if user has favorited
+                    var isFavorited = false
+                    if let userId = userId {
+                        let favorites = try await self.getUserBuildingFavorites(userId: userId)
+                        isFavorited = favorites.contains { $0.buildingId == building.id }
+                    }
+
+                    // Await data
+                    let (totalRooms, actualAvailableRooms) = try await roomsTask
+                    let ratings = try await ratingsTask
+                    let images = try await imagesTask
+
+                    // Use actualAvailableRooms
+                    let details = BuildingDetails(
+                        building: building,
+                        isOpen: isOpen,
+                        totalRooms: totalRooms,
+                        availableRooms: isOpen ? actualAvailableRooms : 0,
+                        ratings: ratings,
+                        images: images,
+                        isFavorited: isFavorited
+                    )
+                    return details
+                }
+            }
+
+            // Collect results
+            for try await details in group {
+                self.buildingDetailsCache[details.building.id] = details
+                results.append(details)
+                onBuildingReady?(details)
+            }
+        }
+
+        // Sort by sortedId so "All" is in the correct order
+        results.sort { ($0.building.sortedId ?? 0) < ($1.building.sortedId ?? 0) }
+
+        print("\n✅ Batch complete: \(results.count) buildings loaded\n")
+        return results
+    }
+
+    // New function to get room counts
+    private func getRoomCounts(buildingId: Int64) async throws -> (total: Int, available: Int) {
+        // Get all rooms for the building
+        let rooms = try await client.from("rooms")
+            .select()
+            .eq("building_id", value: String(buildingId))
+            .execute()
+            .value as [Room]
+            
+        let totalRooms = rooms.count
+        let availableRooms = try await getRoomAvailability(buildingId: buildingId)
+        
+        return (totalRooms, availableRooms)
+    }
+    
+    func getBuildingDetailsWithLogging(buildingId: Int64, userId: UUID? = nil) async throws -> BuildingDetails {
+        print("🏛️ Fetching details for building ID: \(buildingId)")
+        
+        // Fetch building
+        let building = try await client.from("buildings")
+            .select()
+            .eq("id", value: String(buildingId))
+            .single()
+            .execute()
+            .value as Building
+        print("📍 Building basic info retrieved: \(building.name)")
+        
+        // Get building availability status
+        let (isOpen, _) = getBuildingAvailability(buildingId: building.id, hours: building.hours ?? "")
+        print("🕒 Building is currently \(isOpen ? "OPEN" : "CLOSED")")
+        print("🕐 Current hours: \(building.hours ?? "No hours available")")
+        
+        // Get room availability
+        async let roomsTask = getRoomCounts(buildingId: building.id)
+        print("🔍 Checking room availability...")
+        
+        // Get ratings
+        async let ratingsTask = getBuildingRatings(buildingId: building.id)
+        print("⭐️ Fetching ratings...")
+        
+        // Get images
+        async let imagesTask = getBuildingImages(buildingId: building.id)
+        print("🖼️ Loading images...")
+        
+        // Check if favorited
+        var isFavorited = false
+        if let userId = userId {
+            let favorites = try await getUserBuildingFavorites(userId: userId)
+            isFavorited = favorites.contains { $0.buildingId == building.id }
+            print("❤️ Favorite status: \(isFavorited ? "Favorited" : "Not favorited")")
+        }
+        
+        let (totalRooms, availableRooms) = try await roomsTask
+        print("📊 Room availability: \(availableRooms)/\(totalRooms) rooms available")
+        
+        let ratings = try await ratingsTask
+        if !ratings.isEmpty {
+            let avgRating = Double(ratings.map { Int($0.rating) }.reduce(0, +)) / Double(ratings.count)
+            print("⭐️ Average rating: \(String(format: "%.1f", avgRating)) (\(ratings.count) ratings)")
+        } else {
+            print("⭐️ No ratings available")
+        }
+        
+        let images = try await imagesTask
+        print("🖼️ Found \(images.count) images")
+        
+        let details = BuildingDetails(
+            building: building,
+            isOpen: isOpen,
+            totalRooms: totalRooms,
+            availableRooms: availableRooms,
+            ratings: ratings,
+            images: images,
+            isFavorited: isFavorited
+        )
+        
+        print("✅ Successfully compiled building details for: \(building.name)")
+        return details
+    }
+    
+    func getBuildingRatingDetails(buildingId: Int64) async throws -> (average: Double?, count: Int) {
+        print("⭐️ Fetching rating details for building ID: \(buildingId)")
+        
+        let ratings = try await getBuildingRatings(buildingId: buildingId)
+        let count = ratings.count
+        
+        guard count > 0 else {
+            print("ℹ️ No ratings found for building")
+            return (nil, 0)
+        }
+        
+        let sum = ratings.reduce(0.0) { $0 + Double($1.rating) }
+        let average = sum / Double(count)
+        
+        print("📊 Rating summary:")
+        print("   - Total ratings: \(count)")
+        print("   - Average rating: \(String(format: "%.2f", average))")
+        
+        // Log distribution of ratings
+        let distribution = Dictionary(grouping: ratings) { $0.rating }
+            .mapValues { $0.count }
+            .sorted { $0.key > $1.key }
+        
+        print("📈 Rating distribution:")
+        distribution.forEach { rating, count in
+            let percentage = Double(count) / Double(ratings.count) * 100
+            print("   - \(rating) stars: \(count) (\(String(format: "%.1f", percentage))%)")
+        }
+        
+        return (average, count)
+    }
 }
 
 // MARK: - Models
@@ -601,206 +791,6 @@ extension SupabaseService {
         case 7: return "S"
         default: return ""
         }
-    }
-    
-    func getAllBuildingsWithDetails(
-        limit: Int = 25,
-        offset: Int = 0,
-        userId: UUID? = nil,
-        onBuildingReady: ((BuildingDetails) -> Void)? = nil
-    ) async throws -> [BuildingDetails] {
-        print("\n📚 Starting batch load: Offset \(offset), Limit \(limit)")
-        
-        // First, get all buildings for this batch
-        let buildings = try await getAllBuildings(limit: limit, offset: offset)
-        print("📋 Found \(buildings.count) buildings to load")
-        var buildingDetails: [BuildingDetails] = []
-        
-        // Process each building individually to allow immediate display
-        for (index, building) in buildings.enumerated() {
-            print("\n🏛️ [\(offset + index + 1)] Loading building: \(building.name) (ID: \(building.id))")
-            
-            // 1. Get essential data first (availability and primary image)
-            print("  ⏳ Loading essential data...")
-            async let roomsTask = getRoomCounts(buildingId: building.id)
-            let (isOpen, availableRoomsFromHours) = getBuildingAvailability(buildingId: building.id, hours: building.hours ?? "")
-            
-            // Get primary image first
-            let allImages = try await getBuildingImages(buildingId: building.id)
-            let primaryImage = allImages.first { $0.isPrimary == true } ?? allImages.first
-            let initialImages = primaryImage.map { [$0] } ?? []
-            print("  🖼️ Found primary image: \(primaryImage != nil ? "Yes" : "No")")
-            
-            // 2. Check favorites status (if user is logged in)
-            var isFavorited = false
-            if let userId = userId {
-                let favorites = try await getUserBuildingFavorites(userId: userId)
-                isFavorited = favorites.contains { $0.buildingId == building.id }
-                print("  ❤️ Favorite status checked")
-            }
-            
-            // 3. Get room counts (needed for initial display)
-            let (totalRooms, _) = try await roomsTask
-            print("  🚪 Room counts loaded: \(availableRoomsFromHours)/\(totalRooms) available")
-            
-            // 4. Create initial building details with essential data
-            let details = BuildingDetails(
-                building: building,
-                isOpen: isOpen,
-                totalRooms: totalRooms,
-                availableRooms: isOpen ? availableRoomsFromHours : 0,
-                ratings: [],
-                images: initialImages,
-                isFavorited: isFavorited
-            )
-            
-            // Add to array immediately so it can be displayed
-            buildingDetails.append(details)
-            print("  ✅ Building ready for display with essential data")
-            print("  📊 Progress: \(buildingDetails.count)/\(buildings.count) buildings loaded")
-            
-            // Notify caller that this building is ready for display
-            onBuildingReady?(details)
-            
-            // 5. Load remaining data asynchronously
-            Task {
-                do {
-                    print("  ⏳ Loading additional data for \(building.name)...")
-                    async let ratingsTask = getBuildingRatings(buildingId: building.id)
-                    
-                    // Update building details with full data when available
-                    let ratings = try await ratingsTask
-                    
-                    // Update the building details object
-                    details.update(
-                        ratings: ratings,
-                        images: allImages
-                    )
-                    print("  ✨ Additional data loaded for \(building.name)")
-                    print("    - Total images: \(allImages.count)")
-                    print("    - Total ratings: \(ratings.count)")
-                } catch {
-                    print("  ❌ Error loading additional data for \(building.name): \(error)")
-                }
-            }
-        }
-        
-        print("\n✅ Batch complete: \(buildingDetails.count) buildings loaded")
-        print("📍 Next batch would start at offset: \(offset + buildingDetails.count)\n")
-        
-        return buildingDetails
-    }
-    
-    // New function to get room counts
-    private func getRoomCounts(buildingId: Int64) async throws -> (total: Int, available: Int) {
-        // Get all rooms for the building
-        let rooms = try await client.from("rooms")
-            .select()
-            .eq("building_id", value: String(buildingId))
-            .execute()
-            .value as [Room]
-            
-        let totalRooms = rooms.count
-        let availableRooms = try await getRoomAvailability(buildingId: buildingId)
-        
-        return (totalRooms, availableRooms)
-    }
-    
-    func getBuildingDetailsWithLogging(buildingId: Int64, userId: UUID? = nil) async throws -> BuildingDetails {
-        print("🏛️ Fetching details for building ID: \(buildingId)")
-        
-        // Fetch building
-        let building = try await client.from("buildings")
-            .select()
-            .eq("id", value: String(buildingId))
-            .single()
-            .execute()
-            .value as Building
-        print("📍 Building basic info retrieved: \(building.name)")
-        
-        // Get building availability status
-        let (isOpen, _) = getBuildingAvailability(buildingId: building.id, hours: building.hours ?? "")
-        print("🕒 Building is currently \(isOpen ? "OPEN" : "CLOSED")")
-        print("🕐 Current hours: \(building.hours ?? "No hours available")")
-        
-        // Get room availability
-        async let roomsTask = getRoomCounts(buildingId: building.id)
-        print("🔍 Checking room availability...")
-        
-        // Get ratings
-        async let ratingsTask = getBuildingRatings(buildingId: building.id)
-        print("⭐️ Fetching ratings...")
-        
-        // Get images
-        async let imagesTask = getBuildingImages(buildingId: building.id)
-        print("🖼️ Loading images...")
-        
-        // Check if favorited
-        var isFavorited = false
-        if let userId = userId {
-            let favorites = try await getUserBuildingFavorites(userId: userId)
-            isFavorited = favorites.contains { $0.buildingId == building.id }
-            print("❤️ Favorite status: \(isFavorited ? "Favorited" : "Not favorited")")
-        }
-        
-        let (totalRooms, availableRooms) = try await roomsTask
-        print("📊 Room availability: \(availableRooms)/\(totalRooms) rooms available")
-        
-        let ratings = try await ratingsTask
-        if !ratings.isEmpty {
-            let avgRating = Double(ratings.map { Int($0.rating) }.reduce(0, +)) / Double(ratings.count)
-            print("⭐️ Average rating: \(String(format: "%.1f", avgRating)) (\(ratings.count) ratings)")
-        } else {
-            print("⭐️ No ratings available")
-        }
-        
-        let images = try await imagesTask
-        print("🖼️ Found \(images.count) images")
-        
-        let details = BuildingDetails(
-            building: building,
-            isOpen: isOpen,
-            totalRooms: totalRooms,
-            availableRooms: availableRooms,
-            ratings: ratings,
-            images: images,
-            isFavorited: isFavorited
-        )
-        
-        print("✅ Successfully compiled building details for: \(building.name)")
-        return details
-    }
-    
-    func getBuildingRatingDetails(buildingId: Int64) async throws -> (average: Double?, count: Int) {
-        print("⭐️ Fetching rating details for building ID: \(buildingId)")
-        
-        let ratings = try await getBuildingRatings(buildingId: buildingId)
-        let count = ratings.count
-        
-        guard count > 0 else {
-            print("ℹ️ No ratings found for building")
-            return (nil, 0)
-        }
-        
-        let sum = ratings.reduce(0.0) { $0 + Double($1.rating) }
-        let average = sum / Double(count)
-        
-        print("📊 Rating summary:")
-        print("   - Total ratings: \(count)")
-        print("   - Average rating: \(String(format: "%.2f", average))")
-        
-        // Log distribution of ratings
-        let distribution = Dictionary(grouping: ratings) { $0.rating }
-            .mapValues { $0.count }
-            .sorted { $0.key > $1.key }
-        
-        print("📈 Rating distribution:")
-        distribution.forEach { rating, count in
-            let percentage = Double(count) / Double(ratings.count) * 100
-            print("   - \(rating) stars: \(count) (\(String(format: "%.1f", percentage))%)")
-        }
-        
-        return (average, count)
     }
 }
 

@@ -163,7 +163,6 @@ final class BuildingCacheService {
         return try await withThrowingTaskGroup(of: BuildingDetails?.self) { group in
             for cached in cachedBuildings {
                 group.addTask {
-                    // Ensure required fields are present
                     guard let id = cached.id,
                           let name = cached.name,
                           let favorites = cached.favorites,
@@ -172,6 +171,7 @@ final class BuildingCacheService {
                         return nil
                     }
                     
+                    // Create the model for the building
                     let building = Building(
                         id: id,
                         name: name,
@@ -184,42 +184,38 @@ final class BuildingCacheService {
                         sortedId: cached.sortedId
                     )
                     
+                    // Collect rating/image data from CachedBuilding as before
                     let images = try await MainActor.run {
                         (cached.images ?? []).compactMap { image -> BuildingImage? in
-                            guard let id = image.id,
-                                  let buildingId = image.buildingId,
-                                  let url = image.url else { return nil }
-                            
+                            guard let imgId = image.id,
+                                  let bldId = image.buildingId,
+                                  let url = image.url
+                            else { return nil }
                             return BuildingImage(
-                                id: id,
-                                buildingId: buildingId,
+                                id: imgId,
+                                buildingId: bldId,
                                 url: url,
                                 displayOrder: image.displayOrder,
                                 isPrimary: image.isPrimary
                             )
                         }
-                        .sorted { first, second in
-                            // Primary images come first
-                            if first.isPrimary == true && second.isPrimary != true {
-                                return true
-                            }
-                            if second.isPrimary == true && first.isPrimary != true {
-                                return false
-                            }
-                            // Then sort by display order
-                            return (first.displayOrder ?? 0) < (second.displayOrder ?? 0)
+                        .sorted {
+                            // keep primary images first
+                            if $0.isPrimary == true && $1.isPrimary != true { return true }
+                            if $1.isPrimary == true && $0.isPrimary != true { return false }
+                            return ($0.displayOrder ?? 0) < ($1.displayOrder ?? 0)
                         }
                     }
                     
                     let ratings = try await MainActor.run {
                         (cached.ratings ?? []).compactMap { rating -> BuildingRating? in
-                            guard let id = rating.id,
+                            guard let ratingId = rating.id,
                                   let userId = rating.userId,
                                   let buildingId = rating.buildingId,
-                                  let ratingValue = rating.rating else { return nil }
-                            
+                                  let ratingValue = rating.rating
+                            else { return nil }
                             return BuildingRating(
-                                id: id,
+                                id: ratingId,
                                 userId: userId,
                                 buildingId: buildingId,
                                 rating: ratingValue,
@@ -228,30 +224,33 @@ final class BuildingCacheService {
                         }
                     }
                     
-                    let (isOpen, availableRooms) = await self.supabase.getBuildingAvailability(buildingId: building.id, hours: building.hours)
-                    let totalRooms = try await MainActor.run {
-                        cached.rooms?.count ?? 0
-                    }
+                    // 1) Determine if building is open via hours-based logic
+                    let (isOpen, _) = self.supabase.getBuildingAvailability(buildingId: building.id, hours: building.hours ?? "")
+                    
+                    // 2) Get the actual total rooms and available rooms from the service
+                    let (totalRooms, actualAvailableRooms) = try await self.supabase.getRoomCounts(buildingId: building.id)
                     
                     return BuildingDetails(
                         building: building,
                         isOpen: isOpen,
                         totalRooms: totalRooms,
-                        availableRooms: isOpen ? availableRooms : 0,
+                        availableRooms: isOpen ? actualAvailableRooms : 0,
                         ratings: ratings,
                         images: images,
-                        isFavorited: false // This will be updated based on user state
+                        isFavorited: false // updated separately if user is logged in
                     )
                 }
             }
             
-            var buildings: [BuildingDetails] = []
-            for try await building in group {
-                if let building = building {
-                    buildings.append(building)
+            var results: [BuildingDetails] = []
+            for try await buildingDetails in group {
+                if let details = buildingDetails {
+                    results.append(details)
                 }
             }
-            return buildings.sorted { $0.building.sortedId ?? 0 < $1.building.sortedId ?? 0 }
+            
+            // Sort by sortedId so it matches your preferred order
+            return results.sorted { ($0.building.sortedId ?? 0) < ($1.building.sortedId ?? 0) }
         }
     }
     
@@ -463,4 +462,4 @@ final class BuildingCacheService {
     enum CacheError: Error {
         case notConfigured
     }
-} 
+}

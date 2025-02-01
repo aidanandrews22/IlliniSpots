@@ -27,7 +27,7 @@ struct HomeView: View {
     }
     
     func loadContent() async {
-        // First try to load from cache
+        // Show cached data first, then run parallel tasks for fresh data and term updates.
         do {
             let cachedBuildings = try await BuildingCacheService.shared.loadCachedBuildings()
             if !cachedBuildings.isEmpty {
@@ -40,37 +40,43 @@ struct HomeView: View {
             print("Error loading from cache: \(error)")
         }
         
-        // Then fetch fresh data from Supabase
+        isLoading = true
         do {
-            isLoading = true
-            
-            // Update terms cache in parallel with buildings
-            Task {
-                do {
-                    try await BuildingCacheService.shared.updateTermsCache()
-                } catch {
-                    print("Error updating terms cache: \(error)")
-                }
-            }
-            
-            let count = try await SupabaseService.shared.getTotalBuildingCount()
-            await MainActor.run {
-                totalBuildingCount = count
-            }
-            
-            // Use the onBuildingReady callback to update UI immediately as buildings load
-            try await SupabaseService.shared.getAllBuildingsWithDetails(
-                limit: count,
-                offset: 0,
-                userId: authManager.userId,
-                onBuildingReady: { buildingDetails in
-                    Task { @MainActor in
-                        buildings.append(buildingDetails)
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                // Update terms in parallel
+                group.addTask {
+                    do {
+                        try await BuildingCacheService.shared.updateTermsCache()
+                    } catch {
+                        print("Error updating terms cache: \(error)")
                     }
                 }
-            )
+                
+                // Fetch buildings in parallel
+                group.addTask {
+                    let count = try await SupabaseService.shared.getTotalBuildingCount()
+                    await MainActor.run {
+                        totalBuildingCount = count
+                    }
+                    
+                    // Retrieve all buildings with concurrency. Update UI incrementally.
+                    let _ = try await SupabaseService.shared.getAllBuildingsWithDetails(
+                        limit: count,
+                        offset: 0,
+                        userId: authManager.userId,
+                        onBuildingReady: { details in
+                            Task { @MainActor in
+                                buildings.append(details)
+                            }
+                        }
+                    )
+                }
+                
+                // Wait for both tasks
+                try await group.waitForAll()
+            }
             
-            // Update cache with new data
+            // Optionally update the local cache in the background
             Task {
                 do {
                     try await BuildingCacheService.shared.updateCache(with: buildings.map(\.building))
@@ -78,15 +84,12 @@ struct HomeView: View {
                     print("Error updating cache: \(error)")
                 }
             }
-            
-            await MainActor.run {
-                isLoading = false
-            }
         } catch {
             print("Error loading from Supabase: \(error)")
-            await MainActor.run {
-                isLoading = false
-            }
+        }
+        
+        await MainActor.run {
+            isLoading = false
         }
     }
     
