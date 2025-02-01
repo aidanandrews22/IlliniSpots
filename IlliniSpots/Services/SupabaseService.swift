@@ -655,23 +655,36 @@ extension SupabaseService {
     }
     
     private func timeStringToMinutes(_ timeString: String) -> Int? {
-        let components = timeString.components(separatedBy: " ")
-        guard components.count == 2 else { return nil }
+        // Replace multiple whitespace characters (including non-breaking spaces) with a standard space
+        let cleanedTimeString = timeString.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+                                         .trimmingCharacters(in: .whitespacesAndNewlines)
+        print("⏰ Parsing time string: \(cleanedTimeString)")
+        
+        // Split by any whitespace and filter out empty components
+        let components = cleanedTimeString.components(separatedBy: CharacterSet.whitespaces).filter { !$0.isEmpty }
+        guard components.count == 2 else {
+             print("❌ Invalid time string format - expected 'HH:MM AM/PM'")
+             return nil
+        }
         
         let timeComponents = components[0].components(separatedBy: ":")
         guard timeComponents.count == 2,
               var hours = Int(timeComponents[0]),
               let minutes = Int(timeComponents[1]) else {
-            return nil
+             print("❌ Could not parse hours/minutes")
+             return nil
         }
         
-        if components[1] == "PM" && hours != 12 {
-            hours += 12
-        } else if components[1] == "AM" && hours == 12 {
-            hours = 0
+        let meridiem = components[1].uppercased()
+        if meridiem == "PM" && hours != 12 {
+             hours += 12
+        } else if meridiem == "AM" && hours == 12 {
+             hours = 0
         }
-        
-        return hours * 60 + minutes
+      
+        let totalMinutes = hours * 60 + minutes
+        print("⏰ Parsed time: \(hours):\(minutes) (\(totalMinutes) minutes)")
+        return totalMinutes
     }
     
     func getCurrentTerms() async throws -> [Term] {
@@ -711,6 +724,231 @@ extension SupabaseService {
     }
     
     // MARK: - Room Availability Methods
+    func getRoomAvailability(buildingId: Int64, date: Date) async throws -> [RoomAvailability] {
+        print("🔄 Starting room availability check for date: \(date)")
+        
+        // Get all rooms for the building
+        let rooms = try await client.from("rooms")
+            .select()
+            .eq("building_id", value: String(buildingId))
+            .execute()
+            .value as [Room]
+        
+        var availabilities: [RoomAvailability] = []
+        
+        for room in rooms {
+            let events = try await getRoomEvents(for: room.id, on: date)
+            let sortedEvents = events.sorted { $0.startTime < $1.startTime }
+            
+            // Find the current or next event
+            let currentEvent = sortedEvents.first { event in
+                guard let eventStart = timeStringToDate(event.startTime, on: date),
+                      let eventEnd = timeStringToDate(event.endTime, on: date) else {
+                    return false
+                }
+                return date >= eventStart && date <= eventEnd
+            }
+            
+            let nextEvent = sortedEvents.first { event in
+                guard let eventStart = timeStringToDate(event.startTime, on: date) else {
+                    return false
+                }
+                return eventStart > date
+            }
+            
+            let status: RoomAvailability.Status
+            if let current = currentEvent,
+               let endTime = timeStringToDate(current.endTime, on: date) {
+                status = .occupied(until: endTime)
+            } else if let next = nextEvent,
+                      let startTime = timeStringToDate(next.startTime, on: date) {
+                status = .available(until: startTime)
+            } else {
+                status = .available(until: nil)
+            }
+            
+            let nextChange: Date? = if let currentEvent = currentEvent {
+                timeStringToDate(currentEvent.endTime, on: date)
+            } else if let nextEvent = nextEvent {
+                timeStringToDate(nextEvent.startTime, on: date)
+            } else {
+                nil
+            }
+            
+            let availability = RoomAvailability(
+                id: room.id,
+                roomNumber: room.roomNumber,
+                isAvailable: currentEvent == nil,
+                currentStatus: status,
+                nextChange: nextChange,
+                event: currentEvent
+            )
+            
+            availabilities.append(availability)
+        }
+        
+        return availabilities.sorted { $0.roomNumber < $1.roomNumber }
+    }
+    
+    private func timeStringToDate(_ timeString: String, on date: Date) -> Date? {
+        let calendar = Date.chicagoCalendar
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        
+        let timeFormatter = DateFormatter()
+        timeFormatter.dateFormat = "HH:mm:ss"
+        timeFormatter.timeZone = Date.chicagoTimeZone
+        
+        guard let time = timeFormatter.date(from: timeString),
+              let timeComponents = calendar.dateComponents([.hour, .minute, .second], from: time).hour else {
+            return nil
+        }
+        
+        var finalComponents = components
+        finalComponents.hour = timeComponents
+        finalComponents.minute = calendar.component(.minute, from: time)
+        finalComponents.second = calendar.component(.second, from: time)
+        
+        return calendar.date(from: finalComponents)
+    }
+    
+    func getRoomEvents(for roomId: Int64, on date: Date) async throws -> [Event] {
+        let calendar = Date.chicagoCalendar
+        let weekday = calendar.component(.weekday, from: date)
+        let weekdayString = weekdayToString(weekday)
+        
+        // Get current time in HH:mm:ss format for the specified date
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss"
+        formatter.timeZone = Date.chicagoTimeZone
+        let timeString = formatter.string(from: date)
+        
+        // Get current terms
+        let currentTerms = try await BuildingCacheService.shared.getCurrentTerms()
+        guard !currentTerms.isEmpty else { return [] }
+        
+        let termIds = currentTerms.map { String($0.id) }
+        
+        // Fetch events for the room that are active at the specified time
+        let events = try await client.from("events")
+            .select()
+            .eq("room_id", value: String(roomId))
+            .in("term_id", values: termIds)
+            .like("days_of_week", pattern: "%\(weekdayString)%")
+            .execute()
+            .value as [Event]
+        
+        return events
+    }
+    
+    func getBuildingAvailabilityForDate(buildingId: Int64, hours: String?, date: Date) -> (isOpen: Bool, message: String) {
+        print("🕒 Checking building availability for date: \(date)")
+
+        // Use the Chicago time zone
+        let calendar = Calendar.current
+        let localDate = date.inChicagoTimeZone
+        let weekday = calendar.component(.weekday, from: localDate)
+        let currentTime = calendar.component(.hour, from: localDate) * 60 + calendar.component(.minute, from: localDate)
+
+        guard let hours = hours else {
+            return (false, "No hours available")
+        }
+
+        print("📅 Processing hours: \(hours)")
+        
+        let hoursArray = hours.components(separatedBy: "; ")
+        // Map Sunday (=1) to the last index in an array that starts with Monday
+        let dayIndex = (weekday + 5) % 7
+        guard dayIndex < hoursArray.count else {
+            return (false, "Invalid hours data")
+        }
+
+        let todayHours = hoursArray[dayIndex]
+            .replacingOccurrences(of: "–", with: "-") // Convert en dash to hyphen
+            .replacingOccurrences(of: "—", with: "-") // Convert em dash to hyphen
+            .replacingOccurrences(of: " ", with: " ") // Normalize spaces
+            .replacingOccurrences(of: " ", with: " ") // Normalize spaces
+            .trimmingCharacters(in: .whitespaces)
+            
+        print("📅 Today's hours: \(todayHours)")
+
+        if todayHours.contains("Closed") {
+            return (false, "Closed on this day")
+        }
+
+        if todayHours.contains("Open 24 hours") {
+            return (true, "Open 24 hours")
+        }
+        
+        // Format should be "DayOfWeek: HH:MM AM/PM - HH:MM AM/PM"
+        let components = todayHours.components(separatedBy: ": ")
+        guard components.count > 1 else {
+            print("❌ Invalid format - missing colon separator")
+            return (false, "Invalid hours format")
+        }
+        
+        let hourString = components[1].trimmingCharacters(in: .whitespaces)
+        
+        // Split on hyphen with optional spaces
+        let timeRange = hourString.components(separatedBy: CharacterSet(charactersIn: "-"))
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            
+        print("🕐 Time range components: \(timeRange)")
+        
+        guard timeRange.count == 2 else {
+            print("❌ Invalid format - missing time range separator: \(hourString)")
+            return (false, "Invalid time range")
+        }
+        
+        let openPart = timeRange[0]
+        let closePart = timeRange[1]
+        
+        print("🕐 Open part: \(openPart)")
+        print("🕐 Close part: \(closePart)")
+        
+        guard let openTime = timeStringToMinutes(openPart),
+              let closeTime = timeStringToMinutes(closePart) else {
+            print("❌ Could not parse time strings")
+            return (false, "Invalid time format")
+        }
+
+        var adjustedCloseTime = closeTime
+        if closeTime < openTime {
+            adjustedCloseTime += 1440 // add 24 hours
+        }
+
+        print("🕐 Current time (minutes): \(currentTime)")
+        print("🕐 Open time (minutes): \(openTime)")
+        print("🕐 Close time (minutes): \(adjustedCloseTime)")
+
+        let isOpen = currentTime >= openTime && currentTime <= adjustedCloseTime
+        let message: String
+        if isOpen {
+            let remainingMinutes = adjustedCloseTime - currentTime
+            let hours = remainingMinutes / 60
+            let minutes = remainingMinutes % 60
+            if hours > 0 {
+                message = "Open for \(hours)h \(minutes)m"
+            } else {
+                message = "Open for \(minutes)m"
+            }
+        } else if currentTime < openTime {
+            let waitMinutes = openTime - currentTime
+            let hours = waitMinutes / 60
+            let minutes = waitMinutes % 60
+            if hours > 0 {
+                message = "Opens in \(hours)h \(minutes)m"
+            } else {
+                message = "Opens in \(minutes)m"
+            }
+        } else {
+            message = "Closed for the day"
+        }
+
+        print("🏢 Building status: \(isOpen ? "OPEN" : "CLOSED") - \(message)")
+        return (isOpen, message)
+    }
+    
     func getRoomAvailability(buildingId: Int64) async throws -> Int {
         print("🔄 Starting room availability check for building ID: \(buildingId)")
         
