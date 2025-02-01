@@ -248,7 +248,7 @@ class SupabaseService {
     }
 
     // New function to get room counts
-    private func getRoomCounts(buildingId: Int64) async throws -> (total: Int, available: Int) {
+    func getRoomCounts(buildingId: Int64) async throws -> (total: Int, available: Int) {
         // Get all rooms for the building
         let rooms = try await client.from("rooms")
             .select()
